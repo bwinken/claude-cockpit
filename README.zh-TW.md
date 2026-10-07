@@ -15,6 +15,16 @@
 - Claude Code **2.1.292** 以上。Plugin manifest 沒有 Claude Code 會強制執行的最低版本欄位，所以 cockpit 在 session 開始時檢查版本，太舊會顯示警告。
 - mod 功能必須開啟。Claude Code 2.1.286 起預設開啟，但組織可能把它關掉，見[若你的組織管理 Claude Code](#若你的組織管理-claude-code)。
 
+## 支援平台
+
+| 平台 | 狀態 |
+| :- | :- |
+| Linux | 每個功能都在真實的終端機 session 中驗證過 |
+| Windows | 設計上支援，但尚未在真實的 Windows 機器上執行過。測試涵蓋 Windows 路徑：磁碟代號、反斜線、不分大小寫的比對、UNC 共用路徑，以及 git 輸出的 `\r\n`。guard 也能辨識 PowerShell 的 `Remove-Item -Recurse -Force`。Edited files band 需要 `PATH` 中有 `git`（Git for Windows），沒有的話 band 不會顯示 |
+| macOS | 設計上支援，尚未在真實的 Mac 上執行過 |
+
+各平台的 Desktop app 都支援。終端機需要能顯示 `⎿`、`▶`、`×`、`−`、`✓` 等 Unicode 符號，和 Claude Code 本身的需求相同；Windows Terminal 可以正常顯示，舊版的主控台視窗可能無法。
+
 ## 安裝
 
 在終端機的 Claude Code session 提示列輸入：

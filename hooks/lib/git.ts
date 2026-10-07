@@ -44,12 +44,13 @@ export async function snapshot(run: GitRun): Promise<CockpitGitSnapshot | null> 
   let untracked: Record<string, string> | null = {}
   const listed = await out(run, ['ls-files', '--others', '--exclude-standard', '-z'], at)
   // A path with a newline can't go through --stdin-paths: leave it out.
-  const paths = (listed ?? '').split('\0').filter(path => path !== '' && !path.includes('\n'))
+  const paths = (listed ?? '').split('\0').filter(path => path !== '' && !path.includes('\n') && !path.includes('\r'))
   if (paths.length > MAX_UNTRACKED) {
     untracked = null
   } else if (paths.length > 0) {
     const hashed = await out(run, ['hash-object', '-w', '--stdin-paths'], { cwd: root, stdin: paths.join('\n') + '\n' })
-    const blobs = (hashed ?? '').split('\n').filter(Boolean)
+    // git for Windows may end lines with \r\n.
+    const blobs = (hashed ?? '').split('\n').map(line => line.trim()).filter(Boolean)
     if (blobs.length === paths.length) {
       paths.forEach((path, i) => {
         untracked![path] = blobs[i]!

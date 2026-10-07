@@ -8,6 +8,7 @@ import {
   checkCommand,
   combineRules,
   isInside,
+  isWindowsPath,
   NO_RULES,
   normalizePath,
   parseRules,
@@ -125,6 +126,27 @@ describe('paths and the audit trail', () => {
     expect(isInside('/workshop/a.ts', '/work')).toBe(false)
   })
 
+  test('Windows paths: drive letters, backslashes, case and UNC shares', async () => {
+    const home = normalizePath('C:\\Users\\Me', undefined)
+    const root = normalizePath('C:\\Users\\Me\\repo', home)
+    expect(root).toBe('c:/Users/Me/repo')
+    expect(isWindowsPath(root)).toBe(true)
+    expect(isWindowsPath('/home/me')).toBe(false)
+    // NTFS ignores case, so another spelling of the project is the project.
+    expect(isInside(resolvePath(root, normalizePath('c:\\users\\me\\REPO\\src\\a.ts', home)), root)).toBe(true)
+    expect(isInside(resolvePath(root, normalizePath('src\\b.ts', home)), root)).toBe(true)
+    expect(isInside(resolvePath(root, normalizePath('..\\other\\c.ts', home)), root)).toBe(false)
+    expect(isInside(resolvePath(root, normalizePath('D:\\repo\\a.ts', home)), root)).toBe(false)
+    expect(normalizePath('~\\notes', home)).toBe('c:/Users/Me/notes')
+    // A UNC share keeps its leading // through resolving.
+    const share = normalizePath('\\\\server\\share\\repo', home)
+    expect(resolvePath(share, 'src/../a.ts')).toBe('//server/share/repo/a.ts')
+    expect(isInside(resolvePath(share, 'a.ts'), share)).toBe(true)
+    expect(isInside('//server/share/other/a.ts', share)).toBe(false)
+    // Linux and macOS paths keep comparing with case.
+    expect(isInside('/work/Repo/a.ts', '/work/repo')).toBe(false)
+  })
+
   test('keeps at most the cap, dropping the oldest', async () => {
     const entry = (n: number): AuditEntry => ({ at: n, session: 's', tool: 'Bash', decision: 'deny', rule: 'rm-rf', subject: 'rm -rf ' + n })
     let trail: AuditEntry[] = []
@@ -213,6 +235,38 @@ describe('the guard in a session', () => {
     // Added mid-session with /add-dir.
     await $.classic.DirectoryAdded({ directory: '/data', source: 'slash_command' })
     expect(await write('/data/x.csv')).toMatchObject({ result: 'written' })
+  })
+
+  test('on Windows, writes inside the project pass whatever their spelling; outside it they are refused', async ($, on) => {
+    const logs: string[] = []
+    mock.clock(on, { now: 1_000 })
+    on('env.get', ($, e) => ({ value: ({ USERPROFILE: 'C:\\Users\\Me', TEMP: 'C:\\Users\\Me\\AppData\\Local\\Temp' } as Record<string, string>)[e.name] }))
+    on('session.root', () => ({ value: 'C:\\Users\\Me\\repo' }))
+    on('session.id', () => ({ value: 'session-1' }))
+    on('settings.read', () => ({ value: {} }))
+    on('fs.exists', () => ({ value: false }))
+    // Windows answers with backslashes, keeping the spelling it was asked with. (The kit runs on
+    // the test machine, where `c:/...` isn't absolute and arrives with that machine's cwd in front.)
+    on('fs.stat', ($, e) => ({
+      value: { kind: 'file', size: 1, mtimeMs: 0, isLink: false, realPath: e.path.replace(/^.*?([a-zA-Z]:)/, '$1').replace(/\//g, '\\') },
+    }))
+    on('ui.log', ($, e) => {
+      logs.push(e.text)
+      return { value: undefined }
+    })
+    on('store.get', () => ({ value: undefined }))
+    on('store.set', () => ({ value: undefined }))
+    on('tool.call', () => ({ result: 'written' }))
+
+    const write = (file_path: string) => $.tool.call({ tool: 'Write', file_path, content: 'x' })
+    expect(await write('C:\\Users\\Me\\repo\\src\\a.ts')).toMatchObject({ result: 'written' })
+    expect(await write('c:\\users\\me\\repo\\src\\a.ts')).toMatchObject({ result: 'written' })
+    expect(await write('src\\b.ts')).toMatchObject({ result: 'written' })
+    expect(await write('C:\\Users\\Me\\AppData\\Local\\Temp\\scratch.txt')).toMatchObject({ result: 'written' })
+    expect(await write('C:\\Users\\Me\\.claude\\plans\\plan.md')).toMatchObject({ result: 'written' })
+    expect(JSON.stringify(await write('C:\\Windows\\System32\\drivers\\etc\\hosts'))).toMatch(/outside the project/)
+    expect(JSON.stringify(await write('D:\\elsewhere\\a.txt'))).toMatch(/outside the project/)
+    expect(logs.length).toBe(2)
   })
 
   test('rules files: the user can turn rules off and add their own; a project only adds denies', async ($, on) => {

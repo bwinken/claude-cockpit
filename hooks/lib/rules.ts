@@ -210,9 +210,20 @@ export function normalizePath(path: string, home: string | undefined): string {
   return p.length > 1 ? p.replace(/\/+$/, '') : p
 }
 
-/** Whether `path` is `root` or lies under it. */
+/** True for a Windows path, `c:/...` or a UNC `//server/share/...`, whose file system ignores case. */
+export function isWindowsPath(path: string): boolean {
+  return /^[a-z]:\//i.test(path) || /^\/\/[^/]/.test(path)
+}
+
+/**
+ * Whether `path` is `root` or lies under it. Windows paths compare without
+ * regard to case, as NTFS does: `C:/Users/Me/repo` holds `c:/users/me/repo/a.ts`.
+ */
 export function isInside(path: string, root: string): boolean {
-  return path === root || path.startsWith(root.endsWith('/') ? root : root + '/')
+  const ignoreCase = isWindowsPath(path) || isWindowsPath(root)
+  const p = ignoreCase ? path.toLowerCase() : path
+  const r = ignoreCase ? root.toLowerCase() : root
+  return p === r || p.startsWith(r.endsWith('/') ? r : r + '/')
 }
 
 /** The directories writes may go to besides the project: temp directories and Claude Code's own plans and memory. */
@@ -276,9 +287,10 @@ export const NO_RULES: GuardRules = { disabled: new Set(), deny: [], allow: [], 
 
 /** `path` made absolute against `base`, `.` and `..` folded; both already normalized. */
 export function resolvePath(base: string, path: string): string {
-  const isAbsolute = path.startsWith('/') || /^[a-z]:\//.test(path)
+  const isAbsolute = path.startsWith('/') || /^[a-z]:\//i.test(path)
   const joined = isAbsolute ? path : base.replace(/\/+$/, '') + '/' + path
-  const drive = /^[a-z]:/.exec(joined)?.[0] ?? ''
+  // A drive (`c:`) or a UNC share's leading `/` stays in front of the folded segments.
+  const drive = /^[a-z]:/i.exec(joined)?.[0] ?? (/^\/\/[^/]/.test(joined) ? '/' : '')
   const parts: string[] = []
   for (const part of joined.slice(drive.length).split('/')) {
     if (part === '' || part === '.') continue

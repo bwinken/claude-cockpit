@@ -15,6 +15,16 @@
 - Claude Code **2.1.292** or later. Plugin manifests have no field that Claude Code enforces for a minimum version, so cockpit checks the version when a session starts and shows a warning on older versions.
 - Mods turned on. They're on by default since Claude Code 2.1.286, but your organization may have turned them off. See [If your organization manages Claude Code](#if-your-organization-manages-claude-code).
 
+## Platforms
+
+| Platform | Status |
+| :- | :- |
+| Linux | Every feature has been checked in real terminal sessions |
+| Windows | Supported by design, but not yet run on a real Windows machine. The tests cover Windows paths: drive letters, backslashes, case-insensitive comparison, UNC shares, and git's `\r\n` output. The guard also knows PowerShell's `Remove-Item -Recurse -Force`. The edited-files band needs `git` on `PATH` (Git for Windows); without it the band stays hidden |
+| macOS | Supported by design, not yet run on a real Mac |
+
+The Desktop app is supported on every platform. The terminal needs to draw Unicode symbols such as `⎿`, `▶`, `×`, `−` and `✓`, as Claude Code itself does; Windows Terminal draws them, but the old console host may not.
+
 ## Install
 
 At the prompt of a Claude Code session in a terminal, run:

@@ -175,6 +175,15 @@ describe('git snapshots', () => {
     })
   })
 
+  test("git for Windows' \\r\\n line ends don't spoil the blob ids", async () => {
+    const stub = fakeGit()
+    const crlf: GitRun = async (args, options) => {
+      const value = stub(null, { argv: ['git', ...args], init: options }).value
+      return { ...value, stdout: value.stdout.replace(/\n/g, '\r\n') }
+    }
+    expect(await snapshot(crlf)).toEqual({ root: '/repo', tree: 'aaa', untracked: { 'notes.txt': 'b1' } })
+  })
+
   test('outside a git repository there is no snapshot', async () => {
     const run: GitRun = async () => ({ exitCode: 128, stdout: '' })
     expect(await snapshot(run)).toBeNull()
