@@ -226,10 +226,16 @@ export function isInside(path: string, root: string): boolean {
   return p === r || p.startsWith(r.endsWith('/') ? r : r + '/')
 }
 
-/** The directories writes may go to besides the project: temp directories and Claude Code's own plans and memory. */
-export function defaultWritableRoots(home: string | undefined, tmp: readonly (string | undefined)[]): string[] {
+/**
+ * The directories writes may go to besides the project: temp directories and
+ * Claude Code's own configuration directory (`~/.claude`, or CLAUDE_CONFIG_DIR),
+ * where global CLAUDE.md, skills, agents, plans and memory live. Claude Code
+ * still prompts before writes there, as it does for every protected path.
+ */
+export function defaultWritableRoots(home: string | undefined, tmp: readonly (string | undefined)[], configDir?: string): string[] {
   const roots = ['/tmp', '/private/tmp', '/var/folders', ...tmp.filter((t): t is string => !!t)]
-  if (home !== undefined) roots.push(home + '/.claude/plans', home + '/.claude/projects')
+  if (home !== undefined) roots.push(home + '/.claude')
+  if (configDir) roots.push(configDir)
   return roots.map(root => normalizePath(root, home))
 }
 

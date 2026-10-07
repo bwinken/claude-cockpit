@@ -14,6 +14,25 @@ import type { CockpitEditedFile, CockpitEdits, CockpitGitSnapshot } from '../../
 
 export type GitRun = (args: readonly string[], options?: { cwd?: string; stdin?: string }) => Promise<{ exitCode: number; stdout: string }>
 
+/** A file's size and modification time, or null when it can't be read. */
+export type StatFile = (path: string) => Promise<{ size: number; mtimeMs: number } | null>
+
+/**
+ * Untracked files larger than this aren't hashed into the repository's object
+ * store: hashing writes a full copy into .git at every snapshot. Their size
+ * and modification time stand in for their content instead.
+ */
+export const MAX_HASH_BYTES = 2 * 1024 * 1024
+
+/** The stand-in id of a large untracked file: `large:<size>:<mtime>`. */
+export function largeId(size: number, mtimeMs: number): string {
+  return `large:${size}:${Math.floor(mtimeMs)}`
+}
+
+function isLargeId(id: string | null): boolean {
+  return id !== null && id.startsWith('large:')
+}
+
 /** Past this many untracked files, they're left out of the snapshot. */
 export const MAX_UNTRACKED = 500
 /** Past this many changed untracked files, their line counts aren't asked for. */
@@ -31,8 +50,12 @@ async function out(run: GitRun, args: readonly string[], options?: { cwd?: strin
   }
 }
 
-/** The working tree now, or null outside a git repository. */
-export async function snapshot(run: GitRun): Promise<CockpitGitSnapshot | null> {
+/**
+ * The working tree now, or null outside a git repository. With `stat`,
+ * untracked files over MAX_HASH_BYTES are recorded by size and time, not
+ * hashed; without it, every untracked file is hashed.
+ */
+export async function snapshot(run: GitRun, stat?: StatFile): Promise<CockpitGitSnapshot | null> {
   const root = (await out(run, ['rev-parse', '--show-toplevel']))?.trim()
   if (!root) return null
   const at = { cwd: root }
@@ -48,15 +71,23 @@ export async function snapshot(run: GitRun): Promise<CockpitGitSnapshot | null> 
   if (paths.length > MAX_UNTRACKED) {
     untracked = null
   } else if (paths.length > 0) {
-    const hashed = await out(run, ['hash-object', '-w', '--stdin-paths'], { cwd: root, stdin: paths.join('\n') + '\n' })
-    // git for Windows may end lines with \r\n.
-    const blobs = (hashed ?? '').split('\n').map(line => line.trim()).filter(Boolean)
-    if (blobs.length === paths.length) {
-      paths.forEach((path, i) => {
-        untracked![path] = blobs[i]!
-      })
-    } else {
-      untracked = null
+    const toHash: string[] = []
+    for (const path of paths) {
+      const info = stat === undefined ? null : await stat(root + '/' + path)
+      if (info !== null && info.size > MAX_HASH_BYTES) untracked[path] = largeId(info.size, info.mtimeMs)
+      else toHash.push(path)
+    }
+    if (toHash.length > 0) {
+      const hashed = await out(run, ['hash-object', '-w', '--stdin-paths'], { cwd: root, stdin: toHash.join('\n') + '\n' })
+      // git for Windows may end lines with \r\n.
+      const blobs = (hashed ?? '').split('\n').map(line => line.trim()).filter(Boolean)
+      if (blobs.length === toHash.length) {
+        toHash.forEach((path, i) => {
+          untracked![path] = blobs[i]!
+        })
+      } else {
+        untracked = null
+      }
     }
   }
   return { root, tree, untracked }
@@ -128,6 +159,11 @@ export async function diffSnapshots(run: GitRun, from: CockpitGitSnapshot, to: C
     }
     const empty = pairs.some(([, a, b]) => a === null || b === null) ? await emptyBlob(run, root) : null
     for (const [index, [path, a, b]] of pairs.entries()) {
+      // A large file was recorded by size and time: it changed, by how many lines isn't known.
+      if (isLargeId(a) || isLargeId(b)) {
+        byPath.set(path, { path, added: null, removed: null, large: true })
+        continue
+      }
       if (index >= MAX_BLOB_DIFFS || (empty === null && (a === null || b === null))) {
         byPath.set(path, { path, added: null, removed: null })
         continue
