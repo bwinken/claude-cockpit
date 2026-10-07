@@ -83,12 +83,13 @@ export function formatTally(entries: ReadonlyArray<readonly [string, number]>, m
 }
 
 /**
- * The line under the answer: `3 rounds · 6 tool calls (Read ×4, Bash ×2) · 8.5s`,
- * or undefined for a turn that made no tool calls.
+ * The turn's summary: `3 rounds · 6 tool calls (Read ×4, Bash ×2) · 8.5s`, the
+ * duration left out when `durationMs` is undefined; undefined for a turn that
+ * made no tool calls.
  */
 export function summarize(
   rounds: readonly CockpitRound[],
-  durationMs: number,
+  durationMs: number | undefined,
   maxTools: number,
   isAborted = false,
 ): string | undefined {
@@ -98,8 +99,9 @@ export function summarize(
   const parts = [
     asked.length + (asked.length === 1 ? ' round' : ' rounds'),
     `${calls} tool ${calls === 1 ? 'call' : 'calls'} (${formatTally(tally(asked), maxTools)})`,
-    formatDuration(durationMs),
   ]
+  // The terminal's closing line states the duration already: left out there.
+  if (durationMs !== undefined) parts.push(formatDuration(durationMs))
   if (isAborted) parts.push('interrupted')
   return parts.join(' · ')
 }

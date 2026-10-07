@@ -1,11 +1,29 @@
 import { atom, read, update } from 'claude-code'
-import type { Register } from 'claude-code'
+import type { EngineInterface, Register } from 'claude-code'
 
 import { beginStep, endStep, spinnerText, startTurn, summarize, withStreaming } from './lib/rounds'
 import { readConfig } from './lib/config'
 import { isOlder, MIN_CLAUDE_CODE } from './lib/version'
 
 const live = atom({ plugin: 'cockpit', key: 'live' } as const, null)
+const turnLines = atom({ plugin: 'cockpit', key: 'turnLines' } as const, [])
+
+/** How many finished turns' summaries wait for their closing line. */
+const KEPT_TURN_LINES = 50
+
+/**
+ * True when only the terminal draws this session. Its closing line carries
+ * the summary; every other surface (and a headless run, which draws nothing)
+ * gets the summary as the line under the answer.
+ */
+async function isTerminalOnly($: EngineInterface): Promise<boolean> {
+  try {
+    const surfaces = await $.session.surfaces()
+    return surfaces.length > 0 && surfaces.every(surface => surface === 'terminal')
+  } catch {
+    return false
+  }
+}
 
 export const register: Register = (on, options) => {
   const config = readConfig(options)
@@ -67,6 +85,10 @@ export const register: Register = (on, options) => {
 
       const line = summarize(turn.rounds, e.durationMs, config.roundTraceMaxTools, e.isAborted)
       if (line === undefined) return answered
+      const short = summarize(turn.rounds, undefined, config.roundTraceMaxTools, e.isAborted) ?? line
+      const entry = { durationMs: e.durationMs, text: short }
+      await update($, turnLines, lines => [...lines, entry].slice(-KEPT_TURN_LINES))
+      if (await isTerminalOnly($)) return answered
       // Keep a line another mod beneath already put under the answer.
       const theirs = answered.text !== e.answer && answered.text !== '' ? answered.text + ' · ' : ''
       return { ...answered, text: theirs + line }
@@ -77,6 +99,22 @@ export const register: Register = (on, options) => {
       if (text === undefined) return next(e)
       // Change a detail: the engine keeps its word, animation and counters.
       return next({ ...e, props: { ...e.props, suffix: e.props.suffix + ' ' + text } })
+    })
+
+    // The terminal's closing line (`✻ Baked for 5s`): the summary goes on a dim
+    // row under it, with no plugin label. Raised on the terminal only.
+    on('ui.render', { component: 'TurnDuration' }, async ($, e, next) => {
+      const lines = await read($, turnLines)
+      const match = [...lines].reverse().find(line => line.durationMs === e.props.durationMs)
+      if (match === undefined) return next(e)
+      const { Box, Text } = $.ui.resolve(e)
+      const theirs = await next(e)
+      return (
+        <Box flexDirection="column">
+          {theirs}
+          <Text dimColor>{'  ⎿  ' + match.text}</Text>
+        </Box>
+      )
     })
   }
 }

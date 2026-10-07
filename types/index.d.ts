@@ -21,10 +21,21 @@ export type CockpitLiveTurn = {
   streaming: number | null
 }
 
+/**
+ * A finished turn's summary, kept until the terminal draws the line that
+ * closes that turn. The line carries no turn id, only the duration it
+ * reports, so the duration is the key.
+ */
+export type CockpitTurnLine = {
+  durationMs: number
+  text: string
+}
+
 declare module 'claude-code' {
   interface PluginState {
     cockpit: {
       live: CockpitLiveTurn | null
+      turnLines: readonly CockpitTurnLine[]
     }
   }
 }

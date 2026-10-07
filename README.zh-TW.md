@@ -43,7 +43,7 @@ claude --plugin-dir ./claude-cockpit
 **round** 是 Claude 在同一次 model 回應中發出的所有 tool call。只計算主對話，subagent 的請求不列入。
 
 - **round 進行中**：spinner 保留原本的動畫、字詞與計數器，cockpit 在後面加上這一輪正在做的事，例如 `Sauteing… round 2 · parallel processing 3 tool calls` 或 `round 3 · processing 1 tool call`。數量隨 model 回應的串流增加。兩輪之間，model 還在產生下一個回應時，spinner 不加任何內容。終端機寬度不到 90 欄時省略 round 編號。
-- **turn 結束時**：cockpit 在回答下方加一行簡短摘要，列出 round 數、tool call 總數、各工具的呼叫次數與耗時，例如 `3 rounds · 6 tool calls (Read ×4, Bash ×2) · 5.8s`。沒有呼叫任何工具的 turn 不加這一行；被中斷的 turn 會在行尾標示 `interrupted`。MCP 工具顯示為 `server:tool`。
+- **turn 結束時**：cockpit 加上一行簡短摘要，列出 round 數、tool call 總數與各工具的呼叫次數。在終端機中，它是 Claude Code 結束行下方的一行灰字，例如 `✻ Crunched for 3s · done 12:37 PM` 下面接著 `⎿  2 rounds · 5 tool calls (Read ×3, Bash ×2)`。Desktop app、同時有其他 app 連上的 session，以及 `claude -p` 沒有這條結束行，所以在那些環境中，摘要改為回答下方的一行並附上耗時，例如 `2 rounds · 5 tool calls (Read ×3, Bash ×2) · 3.2s`。沒有呼叫任何工具的 turn 不加摘要；被中斷的 turn 會在摘要結尾標示 `interrupted`。MCP 工具顯示為 `server:tool`。
 
 | 選項 | 預設 | 作用 |
 | :- | :- | :- |
@@ -55,7 +55,8 @@ claude --plugin-dir ./claude-cockpit
 - **round 的邊界取決於 model 的回應。** cockpit 計算每次回應裡的 `tool_use` block。由 API 端自己執行的工具（例如 advisor）不列入計算。
 - **Desktop app。** 測試只確認 cockpit 交給 Desktop spinner 的樹，app 實際怎麼畫出這段文字，要在真實 session 中才看得到。在 Desktop app 中，spinner 的字詞描述的是目前的步驟，而不是動畫用的動詞。
 - **檢視 subagent 時。** spinner 不會標明它屬於哪個 loop，所以你在檢視 subagent 的 transcript 時，那裡的 spinner 顯示的是主對話的 round。
-- **摘要列的標籤。** Claude Code 會用所有掛在 turn 結束事件上的 mod 名稱標示這一行，例如 `cockpit+cc-plugin-agents-md:`。
+- **終端機以外的摘要標籤。** 摘要以回答下方一行呈現時，Claude Code 會用所有掛在 turn 結束事件上的 mod 名稱標示這一行，例如 `cockpit+cc-plugin-agents-md:`，mod 無法改變這個標籤。
+- **對應結束行的方式。** Claude Code 的結束行不會標明它屬於哪一輪，所以 cockpit 以毫秒為單位的耗時來對應。兩輪的耗時若完全相同，會顯示同一份摘要。
 
 ## 若你的組織管理 Claude Code
 

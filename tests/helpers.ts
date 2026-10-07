@@ -23,6 +23,18 @@ export function spinner(surface: (typeof SURFACES)[number], columns = 120) {
   } as const
 }
 
+/** The terminal's closing line of a turn, as Claude Code hands it to `ui.render`. */
+export function turnDuration(durationMs: number) {
+  return {
+    plugin: 'cockpit',
+    surface: 'terminal',
+    component: 'TurnDuration',
+    requestId: 'msg-' + durationMs,
+    viewport: { columns: 120, rows: 40, isFullscreen: false },
+    props: { word: 'Baked', durationMs },
+  } as const
+}
+
 /**
  * Registers a `turn.step` stub that streams `plans[e.index]`: one tool chunk
  * per tool, then the stop, and returns the matching result.

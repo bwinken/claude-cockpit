@@ -14,7 +14,7 @@ import {
   withStreaming,
 } from '../hooks/lib/rounds'
 import { isOlder } from '../hooks/lib/version'
-import { drain, spinner, stepStub, SURFACES } from './helpers'
+import { drain, spinner, stepStub, SURFACES, turnDuration } from './helpers'
 
 // Stands for the engine's spinner: it shows the suffix it was handed.
 const suffixStub = ($: unknown, e: { props: unknown }) => ({
@@ -64,6 +64,8 @@ describe('round helpers', () => {
     expect(summarize(rounds, 12_340, 5)).toBe('3 rounds · 6 tool calls (Read ×4, Bash ×2) · 12.3s')
     expect(summarize([makeRound(['Edit'])], 500, 5, true)).toBe('1 round · 1 tool call (Edit) · 500ms · interrupted')
     expect(summarize([], 500, 5)).toBeUndefined()
+    // Without a duration, for the terminal's closing line that states it.
+    expect(summarize(rounds, undefined, 5)).toBe('3 rounds · 6 tool calls (Read ×4, Bash ×2)')
   })
 
   test('compares versions', async () => {
@@ -183,6 +185,48 @@ describe('round tracing in a turn', () => {
     const done = await $.turn.complete({ turnId: 't1', answer: 'ok', durationMs: 1_500, isAborted: false, reason: 'answer' })
     expect(done.text).toBe('1 round · 5 tool calls (Read ×2, Grep, +2 more) · 1.5s')
   })
+
+  test('in a terminal-only session the summary joins the closing line, with no label', async ($, on) => {
+    on('session.surfaces', () => ({ value: ['terminal'] }))
+    on('turn.start', ($, e) => ({ turnId: e.turnId }))
+    on('turn.step', stepStub([{ tools: ['Read', 'Read'] }, { tools: ['Bash'] }]))
+    on('turn.complete', ($, e) => ({ text: e.answer }))
+    // Stands for the engine's own closing line.
+    on('ui.render', ($, e) => ({ type: 'Text' as const, props: {}, children: ['✻ Baked for 3s'] }))
+
+    await $.turn.start({ text: 'x', turnId: 't1' })
+    for (const index of [0, 1]) {
+      await drain($.turn.step({ turnId: 't1', index, model: 'any-model', messageCount: 1 }))
+    }
+    const done = await $.turn.complete({ turnId: 't1', answer: 'ok', durationMs: 3_210, isAborted: false, reason: 'answer' })
+    // No line under the answer: the closing line carries it instead.
+    expect(done.text).toBe('ok')
+
+    const ui = await $.ui.mount(turnDuration(3_210))
+    expect(await ui.find({ type: 'Text', text: '✻ Baked for 3s' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '  ⎿  2 rounds · 3 tool calls (Read ×2, Bash)' })).toBeDefined()
+    await ui.unmount()
+
+    // Another turn's closing line (another duration) is left as the engine draws it.
+    const other = await $.ui.mount(turnDuration(999))
+    expect(await other.find({ type: 'Text', text: /⎿/ })).toBeUndefined()
+    expect(await other.find({ type: 'Text', text: '✻ Baked for 3s' })).toBeDefined()
+  })
+
+  for (const surfaces of [['desktop'], ['terminal', 'desktop'], []] as const) {
+    const where = surfaces.length === 0 ? 'a headless run' : surfaces.join(' + ')
+    test(`with ${where}, the summary is the line under the answer`, async ($, on) => {
+      on('session.surfaces', () => ({ value: surfaces }))
+      on('turn.start', ($, e) => ({ turnId: e.turnId }))
+      on('turn.step', stepStub([{ tools: ['Read', 'Read'] }]))
+      on('turn.complete', ($, e) => ({ text: e.answer }))
+
+      await $.turn.start({ text: 'x', turnId: 't1' })
+      await drain($.turn.step({ turnId: 't1', index: 0, model: 'any-model', messageCount: 1 }))
+      const done = await $.turn.complete({ turnId: 't1', answer: 'ok', durationMs: 3_210, isAborted: false, reason: 'answer' })
+      expect(done.text).toBe('1 round · 2 tool calls (Read ×2) · 3.2s')
+    })
+  }
 
   test('the spinner is left alone between turns', async ($, on) => {
     on('ui.render', suffixStub)
