@@ -1,7 +1,8 @@
 // Pure helpers for the timeline pane and the edited-files band.
 
-import type { CockpitEdits, CockpitTimeline, CockpitTokens, CockpitTurnRow } from '../../types'
-import { count } from './rounds'
+import type { CockpitEdits, CockpitLiveTurn, CockpitRound, CockpitTimeline, CockpitTokens, CockpitTurnRow } from '../../types'
+import { totalEdits } from './git'
+import { count, tally } from './rounds'
 
 /** The most turns the timeline keeps, compacted sections included; the oldest go first. */
 export const MAX_ROWS = 200
@@ -98,19 +99,65 @@ export function foldCompacted(timeline: CockpitTimeline): CockpitTimeline {
   return { compacted: [...timeline.compacted, { rows: timeline.rows }], rows: [] }
 }
 
-/** A section's totals for its header: turns, tool calls, tokens and time. */
-export function sectionTotals(rows: readonly CockpitTurnRow[]): { turns: number; calls: number; tokens: CockpitTokens; durationMs: number } {
-  let calls = 0
+/** `<1m`, `12m`, `1h 05m`: how long the session has run, to the minute. */
+export function formatElapsed(ms: number): string {
+  const minutes = Math.floor(count(ms) / 60_000)
+  if (minutes < 1) return '<1m'
+  if (minutes < 60) return minutes + 'm'
+  return Math.floor(minutes / 60) + 'h ' + String(minutes % 60).padStart(2, '0') + 'm'
+}
+
+/** `45% of 1M (450k)`, or a note while no response has measured it yet. */
+export function describeContext(context: { tokens?: number; window?: number; percent?: number } | undefined): string {
+  if (context === undefined || context.tokens === undefined) return 'not measured yet'
+  const window = count(context.window)
+  const percent = context.percent ?? (window > 0 ? Math.round((count(context.tokens) / window) * 100) : undefined)
+  const used = formatTokens(context.tokens)
+  if (percent === undefined || window === 0) return used
+  return `${count(percent)}% of ${formatTokens(window)} (${used})`
+}
+
+export type SessionTotals = {
+  turns: number
+  compactions: number
+  calls: number
+  tools: Array<[string, number]>
+  tokens: CockpitTokens
+  edits: CockpitEdits | null
+}
+
+/**
+ * The whole session so far: every turn in every segment, plus the one
+ * running. Files edited in several turns count once, their lines summed.
+ */
+export function sessionTotals(timeline: CockpitTimeline, running: CockpitLiveTurn | null): SessionTotals {
+  const rows = [...timeline.compacted.flatMap(section => section.rows), ...timeline.rows]
+  const rounds = [...rows.flatMap(row => row.rounds), ...(running?.rounds ?? [])]
   let tokens = NO_TOKENS
-  let durationMs = 0
-  for (const row of rows) {
-    for (const round of row.rounds) calls += count(round.calls)
-    tokens = {
-      in: tokens.in + count(row.tokens.in),
-      out: tokens.out + count(row.tokens.out),
-      responses: tokens.responses + count(row.tokens.responses),
-    }
-    durationMs += count(row.durationMs)
+  for (const t of [...rows.map(row => row.tokens), ...(running ? [running.tokens] : [])]) {
+    tokens = { in: tokens.in + count(t.in), out: tokens.out + count(t.out), responses: tokens.responses + count(t.responses) }
   }
-  return { turns: rows.length, calls, tokens, durationMs }
+  const files = new Map<string, { added: number | null; removed: number | null }>()
+  for (const row of rows) {
+    for (const file of row.edits?.files ?? []) {
+      const seen = files.get(file.path)
+      const sum = (a: number | null | undefined, b: number | null) => (a == null && b === null ? null : count(a) + count(b))
+      files.set(file.path, { added: sum(seen?.added, file.added), removed: sum(seen?.removed, file.removed) })
+    }
+  }
+  const edits = files.size === 0 ? null : totalEdits([...files].map(([path, lines]) => ({ path, ...lines })))
+  return {
+    turns: rows.length + (running ? 1 : 0),
+    compactions: timeline.compacted.length,
+    calls: rounds.reduce((sum, round) => sum + count(round.calls), 0),
+    tools: tally(rounds),
+    tokens,
+    edits,
+  }
+}
+
+/** A row's calls for its one line: `3 calls`, `1 call`, `no calls`. */
+export function describeCalls(rounds: readonly CockpitRound[]): string {
+  const calls = rounds.reduce((sum, round) => sum + count(round.calls), 0)
+  return calls === 0 ? 'no calls' : `${calls} ${calls === 1 ? 'call' : 'calls'}`
 }

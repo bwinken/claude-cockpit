@@ -52,11 +52,26 @@ A **round** is the set of tool calls that Claude asks for in a single model resp
 
 ### Timeline pane
 
-Run `/cockpit` to open a pane with one row per turn, newest first. `/cockpit close` closes it. cockpit never opens the pane on its own, so a narrow terminal stays as it is. In the fullscreen layout the pane docks beside the transcript; otherwise it opens above the prompt.
+Run `/cockpit` to open a pane that shows where the whole session stands. `/cockpit close` closes it. cockpit never opens the pane on its own, so a narrow terminal stays as it is. In the fullscreen layout the pane docks beside the transcript; otherwise it opens above the prompt.
 
-Each row has the prompt (cut to fit), how long the turn took, and a second line with its rounds and calls per tool, its tokens, and its edited files, as in `1 round · 3 tool calls (Edit ×2, Write) · 64.1k in · 655 out · +18 −0 in 3 files`. Tokens are summed over the turn's main-conversation responses: `in` counts uncached, cache-read and cache-written input together, and `out` counts output. A provider or gateway that reports no cache fields, or zeros, still gives correct numbers, and one that reports no usage at all shows `no token usage reported`. While a turn runs, it's listed at the top with what it's doing.
+```text
+Session · running 12m
+  context    45% of 1M (450k)
+  turns      5 (1 compaction) · 23 tool calls
+  tools      Read ×10, Edit ×6, Bash ×5, +2 more
+  tokens     340k in · 4.1k out
+  edited     6 files +120 −8
 
-When the conversation is compacted, the turns so far fold under one `── compacted · …` header with their totals and a **Show** button, and numbering starts again at #1. Nothing is dropped. The pane keeps the last 200 turns. `/clear`, `/resume` and `/branch` start a new conversation, so the timeline starts empty.
+#1 read the config files               2 calls     3.0s
+#2 add the add() function               3 calls     5.6s  +18 −0
+── compacted ──
+#1 run ls src                           1 call      2.4s
+▶ #2 fix the failing test               round 2 · 3 calls
+```
+
+- **The overview** covers the whole session. It shows how long the session has run (updated every 30 seconds), how full the context window is, the number of turns and compactions, the total tool calls and the calls per tool, the tokens, and every file edited so far. A file edited in several turns counts once, with its lines summed. Tokens are summed over the main conversation's responses: `in` counts uncached, cache-read and cache-written input together, and `out` counts output. A provider or gateway that reports no cache fields, or zeros, still gives correct numbers. One that reports no usage at all shows `no token usage reported`.
+- **Each turn is one line**, with #1 at the top: the prompt (cut to fit), its tool calls, how long it took, and its edits. The running turn is the last line, marked `▶`, with the round it's on.
+- **A compaction** draws a `── compacted ──` divider, and numbering starts again at #1 below it. Nothing is dropped. The pane keeps the last 200 turns. `/clear`, `/resume` and `/branch` start a new conversation, so the timeline starts empty.
 
 | Option | Default | What it does |
 | :- | :- | :- |

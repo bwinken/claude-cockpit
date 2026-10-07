@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'claude-code/testing'
+import { describe, expect, mock, test } from 'claude-code/testing'
 
 import type { CockpitTurnRow } from '../types'
 import { diffSnapshots, parseCounts, parseNumstat, snapshot } from '../hooks/lib/git'
@@ -13,7 +13,10 @@ import {
   formatTokens,
   MAX_ROWS,
   NO_TOKENS,
+  describeContext,
+  formatElapsed,
   oneLine,
+  sessionTotals,
   shortPath,
 } from '../hooks/lib/timeline'
 import { band, drain, fakeGit, notGit, pane, stepsByTurn, SURFACES } from './helpers'
@@ -52,6 +55,33 @@ describe('timeline helpers', () => {
     expect(oneLine('fix   the\nfailing  test', 50)).toBe('fix the failing test')
     expect(oneLine('a very long prompt indeed', 10)).toBe('a very lo…')
     expect(shortPath('hooks/lib/rounds.ts', 12)).toBe('…/rounds.ts')
+  })
+
+  test('describes the session: elapsed time, context, totals across segments', async () => {
+    expect(formatElapsed(30_000)).toBe('<1m')
+    expect(formatElapsed(760_000)).toBe('12m')
+    expect(formatElapsed(3_900_000)).toBe('1h 05m')
+    expect(describeContext({ tokens: 450_000, window: 1_000_000, percent: 45 })).toBe('45% of 1M (450k)')
+    // percent left out: worked out from tokens and window.
+    expect(describeContext({ tokens: 50_000, window: 200_000 })).toBe('25% of 200k (50k)')
+    expect(describeContext({ window: 200_000 })).toBe('not measured yet')
+    expect(describeContext(undefined)).toBe('not measured yet')
+
+    const edited = (path: string, added: number) => ({ files: [{ path, added, removed: 1 }], added, removed: 1 })
+    let timeline = addRow(EMPTY_TIMELINE, { ...row('t1'), rounds: [makeRound(['Read', 'Read'])], tokens: { in: 100, out: 10, responses: 1 }, edits: edited('a.ts', 3) })
+    timeline = foldCompacted(timeline)
+    timeline = addRow(timeline, { ...row('t2'), rounds: [makeRound(['Edit'])], tokens: { in: 50, out: 5, responses: 1 }, edits: edited('a.ts', 2) })
+    const totals = sessionTotals(timeline, { turnId: 't3', prompt: 'x', rounds: [makeRound(['Read'])], streaming: null, tokens: { in: 1, out: 1, responses: 1 } })
+    expect(totals.turns).toBe(3)
+    expect(totals.compactions).toBe(1)
+    expect(totals.calls).toBe(4)
+    expect(totals.tools).toEqual([
+      ['Read', 3],
+      ['Edit', 1],
+    ])
+    expect(totals.tokens).toEqual({ in: 151, out: 16, responses: 3 })
+    // a.ts edited in two turns counts once, its lines summed.
+    expect(totals.edits).toEqual({ files: [{ path: 'a.ts', added: 5, removed: 2 }], added: 5, removed: 2 })
   })
 
   test('folds turns on compaction without dropping any', async () => {
@@ -129,10 +159,34 @@ const PLANS = {
   t3: [{ tools: ['Edit'], usage: { input_tokens: 10, output_tokens: 5 } }, { tools: [] }],
 }
 
+/** The texts of an element and its children, in drawing order. */
+function texts(node: unknown): string[] {
+  if (typeof node === 'string') return [node]
+  if (node === null || typeof node !== 'object') return []
+  const el = node as { type?: string; children?: unknown[] }
+  const inner = (el.children ?? []).flatMap(texts)
+  return el.type === 'Text' ? [inner.join('')] : inner
+}
+
+/** The pane's turn lines, top to bottom: `#1 prompt | stats`. */
+async function turnLines(ui: { find: (q: { key: string }) => Promise<unknown> }): Promise<string[]> {
+  const list = await ui.find({ key: 'turn-list' })
+  const out: string[] = []
+  for (const child of (list as { children?: unknown[] } | undefined)?.children ?? []) {
+    out.push(texts(child).map(t => t.trim().replace(/ +/g, ' ')).join(' | '))
+  }
+  return out
+}
+
+const USAGE_NOW = {
+  value: { startedAt: 0, context: { tokens: 450_000, window: 1_000_000, percent: 45 }, rateLimits: [] },
+}
+
 describe('timeline pane', () => {
   test('/cockpit opens the pane; the session start does not', async ($, on) => {
     const opened: unknown[] = []
     const registered: string[] = []
+    mock.clock(on)
     on('session.start', () => ({ cwd: '/work' }))
     on('session.version', () => ({ value: { version: '2.1.292', base: '2.1.292', builtAt: '' } }))
     on('command.register', ($, e) => {
@@ -153,7 +207,9 @@ describe('timeline pane', () => {
     expect(opened).toEqual([{ id: 'cockpit-timeline', title: 'Cockpit timeline' }])
   })
 
-  test('one row per turn, newest first, on both surfaces; missing usage never shows NaN', async ($, on) => {
+  test('the session overview, then one line per turn from #1 down, on both surfaces', async ($, on) => {
+    mock.clock(on, { now: 760_000 })
+    on('session.usage', () => USAGE_NOW)
     on('session.surfaces', () => ({ value: ['terminal'] }))
     on('process.run', notGit())
     on('turn.start', ($, e) => ({ turnId: e.turnId }))
@@ -165,34 +221,45 @@ describe('timeline pane', () => {
 
     for (const surface of SURFACES) {
       const ui = await $.ui.mount(pane(surface))
-      expect(await ui.find({ type: 'Text', text: '#2 run the build' })).toBeDefined()
-      expect(await ui.find({ type: 'Text', text: '1m 01s' })).toBeDefined()
-      // t2's responses reported no usage at all.
-      expect(await ui.find({ type: 'Text', text: '   1 round · 1 tool call (Bash) · no token usage reported' })).toBeDefined()
-      expect(await ui.find({ type: 'Text', text: '#1 read the two config files and compare them' })).toBeDefined()
-      // t1: one response with every field, one with no cache fields.
-      expect(await ui.find({ type: 'Text', text: '   1 round · 2 tool calls (Read ×2) · 42.2k in · 350 out' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: 'Session · running 12m' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: '45% of 1M (450k)' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: '2 · 3 tool calls' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: 'Read ×2, Bash' })).toBeDefined()
+      // t1 reported every field once and no cache fields once; t2 reported no usage at all.
+      expect(await ui.find({ type: 'Text', text: '42.2k in · 350 out' })).toBeDefined()
+      expect(await turnLines(ui)).toEqual([
+        '#1 read the two config files and compare them | 2 calls 3.2s',
+        '#2 run the build | 1 call 1m 01s',
+      ])
       expect(await ui.find({ type: 'Text', text: /NaN|undefined/ })).toBeUndefined()
       await ui.unmount()
     }
   })
 
-  test('the running turn is listed at the top while it runs', async ($, on) => {
+  test('the running turn is the last line while it runs', async ($, on) => {
+    mock.clock(on)
+    on('session.usage', () => USAGE_NOW)
+    on('session.surfaces', () => ({ value: ['terminal'] }))
     on('process.run', notGit())
     on('turn.start', ($, e) => ({ turnId: e.turnId }))
     on('turn.step', stepsByTurn(PLANS))
+    on('turn.complete', ($, e) => ({ text: e.answer }))
 
+    await runTurn($, 't2', 'run the build', 2, 4_000)
     await $.turn.start({ text: 'read the two config files', turnId: 't1' })
     await drain($.turn.step({ turnId: 't1', index: 0, model: 'any-model', messageCount: 1 }))
     for (const surface of SURFACES) {
       const ui = await $.ui.mount(pane(surface))
-      expect(await ui.find({ type: 'Text', text: '▶ #1 read the two config files' })).toBeDefined()
-      expect(await ui.find({ type: 'Text', text: '   running · round 1 · parallel processing 2 tool calls · 42.1k in · 300 out' })).toBeDefined()
+      const lines = await turnLines(ui)
+      expect(lines[0]).toMatch(/^#1 run the build \| 1 call/)
+      expect(lines[1]).toBe('▶ #2 read the two config files | round 1 · 2 calls')
       await ui.unmount()
     }
   })
 
-  test('a compaction folds the turns so far and the count starts again', async ($, on) => {
+  test('a compaction draws a divider and the count starts again under it', async ($, on) => {
+    mock.clock(on)
+    on('session.usage', () => USAGE_NOW)
     on('session.surfaces', () => ({ value: ['terminal'] }))
     on('process.run', notGit())
     on('turn.start', ($, e) => ({ turnId: e.turnId }))
@@ -207,23 +274,29 @@ describe('timeline pane', () => {
 
     for (const surface of SURFACES) {
       const ui = await $.ui.mount(pane(surface))
-      expect(await ui.find({ type: 'Text', text: '#1 after compaction' })).toBeDefined()
-      expect(
-        await ui.find({ type: 'Text', text: '── compacted · 2 turns · 3 tool calls · 42.2k in · 350 out · 7.0s' }),
-      ).toBeDefined()
-      // Folded: the old rows are kept but not drawn until asked for.
-      expect(await ui.find({ type: 'Text', text: '#1 first prompt' })).toBeUndefined()
-      await ui.press({ key: 'toggle-compacted-0' })
-      expect(await ui.find({ type: 'Text', text: '#1 first prompt' })).toBeDefined()
-      expect(await ui.find({ type: 'Text', text: '#2 second prompt' })).toBeDefined()
-      await ui.press({ key: 'toggle-compacted-0' })
-      expect(await ui.find({ type: 'Text', text: '#1 first prompt' })).toBeUndefined()
+      const lines = await turnLines(ui)
+      expect(lines.map(line => line.split(' | ')[0])).toEqual(['#1 first prompt', '#2 second prompt', '── compacted ──', '#1 after compaction'])
+      expect(await ui.find({ type: 'Text', text: '3 (1 compaction) · 4 tool calls' })).toBeDefined()
+      await ui.unmount()
+    }
+  })
+
+  test('without usage to read, the overview still draws', async ($, on) => {
+    on('session.usage', () => ({ deny: 'not available' }))
+    for (const surface of SURFACES) {
+      const ui = await $.ui.mount(pane(surface))
+      expect(await ui.find({ type: 'Text', text: 'Session' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: 'not measured yet' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: 'no token usage reported' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: 'No turns yet in this conversation.' })).toBeDefined()
       await ui.unmount()
     }
   })
 
   for (const source of ['clear', 'resume', 'fork'] as const) {
     test(`after /${source === 'fork' ? 'branch' : source} resets $.state, the pane and the band start empty`, async ($, on) => {
+      mock.clock(on)
+      on('session.usage', () => USAGE_NOW)
       on('classic.SessionStart', () => ({}))
       on('ui.render', () => ({ type: 'Text' as const, props: {}, children: ['other band'] }))
       // Each test starts with $.state at its defaults, which is how these commands leave it.
@@ -231,6 +304,7 @@ describe('timeline pane', () => {
       for (const surface of SURFACES) {
         const ui = await $.ui.mount(pane(surface))
         expect(await ui.find({ type: 'Text', text: 'No turns yet in this conversation.' })).toBeDefined()
+        expect(await ui.find({ type: 'Text', text: '0 · 0 tool calls' })).toBeDefined()
         await ui.unmount()
         const above = await $.ui.mount(band(surface))
         expect(await above.find({ type: 'Text', text: 'other band' })).toBeDefined()
@@ -273,9 +347,10 @@ describe('edited files band', () => {
       await ui.unmount()
     }
 
-    // The timeline row carries the same totals.
+    // The timeline's line and overview carry the same totals.
     const timeline = await $.ui.mount(pane('terminal'))
-    expect(await timeline.find({ type: 'Text', text: '   1 round · 1 tool call (Edit) · 10 in · 5 out · +10 −1 in 3 files' })).toBeDefined()
+    expect((await turnLines(timeline))[0]).toBe('#1 edit the hooks | 1 call 2.0s +10 −1')
+    expect(await timeline.find({ type: 'Text', text: '3 files +10 −1' })).toBeDefined()
     await timeline.unmount()
 
     const ui = await $.ui.mount(band('terminal'))
@@ -318,7 +393,8 @@ describe('edited files band', () => {
       await ui.unmount()
     }
     const timeline = await $.ui.mount(pane('terminal'))
-    expect(await timeline.find({ type: 'Text', text: '   1 round · 1 tool call (Edit) · 10 in · 5 out' })).toBeDefined()
+    expect((await turnLines(timeline))[0]).toBe('#1 edit the hooks | 1 call 2.0s')
+    expect(await timeline.find({ type: 'Text', text: /files/ })).toBeUndefined()
   })
 
   test('turned off in userConfig, git never runs', { options: { editedFiles: false } }, async ($, on) => {

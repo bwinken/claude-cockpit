@@ -52,11 +52,26 @@ claude --plugin-dir ./claude-cockpit
 
 ### Timeline pane
 
-輸入 `/cockpit` 開啟 pane，每一輪一列，最新的在最上面。`/cockpit close` 關閉。cockpit 不會自己打開這個 pane，窄的終端機因此不受影響。fullscreen 版面下 pane 停靠在 transcript 旁邊，其他情況則開在 prompt 上方。
+輸入 `/cockpit` 開啟 pane，查看整個 session 的現況；`/cockpit close` 關閉。cockpit 不會自己打開這個 pane，窄的終端機因此不受影響。fullscreen 版面下 pane 停靠在 transcript 旁邊，其他情況則開在 prompt 上方。
 
-每一列有 prompt（依寬度截斷）、該輪耗時，第二行列出 round 數與各工具呼叫次數、token 數和編輯過的檔案，例如 `1 round · 3 tool calls (Edit ×2, Write) · 64.1k in · 655 out · +18 −0 in 3 files`。token 數是該輪主對話所有回應的加總：`in` 包含未快取、從快取讀取與寫入快取的輸入，`out` 是輸出。provider 或 gateway 不回報 cache 欄位或回報 0 時，數字照樣正確；完全沒有回報 usage 時顯示 `no token usage reported`。turn 進行中時，它列在最上面，並顯示正在做的事。
+```text
+Session · running 12m
+  context    45% of 1M (450k)
+  turns      5 (1 compaction) · 23 tool calls
+  tools      Read ×10, Edit ×6, Bash ×5, +2 more
+  tokens     340k in · 4.1k out
+  edited     6 files +120 −8
 
-對話被 compact 時，到目前為止的 turn 會摺疊到一個 `── compacted · …` 標題下，標題附總計和 **Show** 按鈕，編號從 #1 重新開始，不會刪除任何資料。pane 最多保留最近 200 輪。`/clear`、`/resume`、`/branch` 會開始新的對話，所以 timeline 從空白開始。
+#1 read the config files               2 calls     3.0s
+#2 add the add() function               3 calls     5.6s  +18 −0
+── compacted ──
+#1 run ls src                           1 call      2.4s
+▶ #2 fix the failing test               round 2 · 3 calls
+```
+
+- **總覽**涵蓋整個 session：已執行多久（每 30 秒更新）、context window 的用量、turn 數與 compaction 次數、tool call 總數與各工具次數、token 數，以及至今編輯過的所有檔案。同一個檔案在多輪中被編輯只算一次，行數加總。token 數是主對話所有回應的加總：`in` 包含未快取、從快取讀取與寫入快取的輸入，`out` 是輸出。provider 或 gateway 不回報 cache 欄位或回報 0 時，數字照樣正確；完全沒有回報 usage 時顯示 `no token usage reported`。
+- **每一輪一行**，#1 在最上面：prompt（依寬度截斷）、tool call 數、耗時與編輯的檔案。進行中的那一輪在最後一行，以 `▶` 標示，並顯示目前的 round。
+- **compaction** 時會畫一條 `── compacted ──` 分隔線，線下的編號從 #1 重新開始，不會刪除任何資料。pane 最多保留最近 200 輪。`/clear`、`/resume`、`/branch` 會開始新的對話，所以 timeline 從空白開始。
 
 | 選項 | 預設 | 作用 |
 | :- | :- | :- |

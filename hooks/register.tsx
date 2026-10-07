@@ -14,7 +14,7 @@ import { timelineTree } from './ui/timeline'
 export const live = atom({ plugin: 'cockpit', key: 'live' } as const, null)
 export const turnLines = atom({ plugin: 'cockpit', key: 'turnLines' } as const, [])
 export const timeline = atom({ plugin: 'cockpit', key: 'timeline' } as const, { compacted: [], rows: [] })
-export const showCompacted = atom({ plugin: 'cockpit', key: 'showCompacted' } as const, false)
+const tick = atom({ plugin: 'cockpit', key: 'tick' } as const, 0)
 export const lastEdits = atom({ plugin: 'cockpit', key: 'lastEdits' } as const, null)
 export const editsExpanded = atom({ plugin: 'cockpit', key: 'editsExpanded' } as const, false)
 export const editsDismissed = atom({ plugin: 'cockpit', key: 'editsDismissed' } as const, false)
@@ -65,6 +65,8 @@ export const register: Register = (on, options) => {
       // No version to compare against: carry on.
     }
     if (config.timeline) {
+      // The pane's running time moves to the minute: a tick every 30s redraws it, and nothing else.
+      $.clock.every(30_000, () => void update($, tick, n => (n + 1) % 1_000_000))
       await $.command.register({
         name: 'cockpit',
         description: 'Open the cockpit timeline pane (/cockpit close closes it)',
@@ -202,16 +204,27 @@ export const register: Register = (on, options) => {
       return {}
     })
 
-    on('ui.render', { component: 'Pane', requestId: 'cockpit-timeline' }, async ($, e) =>
-      timelineTree($.ui.resolve(e), {
+    on('ui.render', { component: 'Pane', requestId: 'cockpit-timeline' }, async ($, e) => {
+      // Reading the tick redraws the pane each time it moves, so the running time keeps up.
+      await read($, tick)
+      let elapsedMs: number | undefined
+      let context: { tokens?: number; window?: number; percent?: number } | undefined
+      try {
+        const usage = await $.session.usage()
+        elapsedMs = (await $.clock.now()) - usage.startedAt
+        context = usage.context
+      } catch {
+        // No usage to read: the overview leaves those two out.
+      }
+      return timelineTree($.ui.resolve(e), {
         timeline: await read($, timeline),
         running: await read($, live),
-        isShowingCompacted: await read($, showCompacted),
         columns: e.props.bodyColumns,
         maxTools: config.roundTraceMaxTools,
-        onToggleCompacted: () => update($, showCompacted, shown => !shown),
-      }),
-    )
+        elapsedMs,
+        context,
+      })
+    })
 
     // A compaction keeps $.state: fold this segment's turns, then count afresh.
     on('classic.SessionStart', { source: 'compact' }, async ($, e, next) => {

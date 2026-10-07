@@ -61,6 +61,18 @@ export function spinnerText(live: CockpitLiveTurn | null, columns?: number): str
   return columns !== undefined && columns < 90 ? describeCalls(calls) : `round ${round} · ${describeCalls(calls)}`
 }
 
+/** The pane's short form of the round in progress: `round 2 · 3 calls`, or `thinking`. */
+export function roundBrief(live: CockpitLiveTurn): string {
+  const streaming = count(live.streaming)
+  if (streaming > 0) return `round ${live.rounds.length + 1} · ${streaming} ${streaming === 1 ? 'call' : 'calls'}`
+  const last = live.rounds[live.rounds.length - 1]
+  if (live.streaming === null && last !== undefined) {
+    const calls = count(last.calls)
+    return `round ${live.rounds.length} · ${calls} ${calls === 1 ? 'call' : 'calls'}`
+  }
+  return 'thinking'
+}
+
 /** Every tool's calls across rounds, most used first; ties keep first use. */
 export function tally(rounds: readonly CockpitRound[]): Array<[string, number]> {
   const totals = new Map<string, number>()

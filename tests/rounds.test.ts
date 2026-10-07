@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'claude-code/testing'
+import { describe, expect, mock, test } from 'claude-code/testing'
 
 import {
   beginStep,
@@ -6,6 +6,7 @@ import {
   formatDuration,
   formatTally,
   makeRound,
+  roundBrief,
   spinnerText,
   startTurn,
   summarize,
@@ -37,6 +38,17 @@ describe('round helpers', () => {
     expect(spinnerText(turn, 120)).toBe('round 2 · processing 1 tool call')
     expect(spinnerText(turn, 80)).toBe('processing 1 tool call')
     expect(spinnerText(null, 120)).toBeUndefined()
+  })
+
+  test("gives the pane's short form of the round", async () => {
+    let turn = beginStep(startTurn('t1'), 't1')
+    expect(roundBrief(turn)).toBe('thinking')
+    turn = withStreaming(turn, 't1', 2)
+    expect(roundBrief(turn)).toBe('round 1 · 2 calls')
+    turn = endStep(turn, 't1', ['Read', 'Read', 'Grep'])
+    expect(roundBrief(turn)).toBe('round 1 · 3 calls')
+    turn = withStreaming(beginStep(turn, 't1'), 't1', 1)
+    expect(roundBrief(turn)).toBe('round 2 · 1 call')
   })
 
   test('counts calls per tool, most used first', async () => {
@@ -253,6 +265,8 @@ describe('round tracing in a turn', () => {
 
   test('warns once at session start on an older Claude Code', async ($, on) => {
     const toasts: string[] = []
+    mock.clock(on)
+    on('command.register', ($, e) => ({ value: { command: e.name } }))
     on('session.start', () => ({ cwd: '/work' }))
     on('session.version', () => ({ value: { version: '2.1.200', base: '2.1.200', builtAt: '2026-01-01T00:00:00Z' } }))
     on('ui.toast', ($, e) => {

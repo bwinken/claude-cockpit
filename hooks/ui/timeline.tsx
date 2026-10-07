@@ -1,104 +1,111 @@
-// The timeline pane's tree: one row per turn, newest first, with the turns
-// before each compaction folded under a header. No `$` here: the hook in
-// register.tsx reads the state and passes the surface's elements in.
+// The timeline pane's tree: the whole session at a glance, then one line per
+// turn from #1 down, compactions marked, the running turn last. No `$` here:
+// the hook in register.tsx reads the state and passes the surface's elements in.
 
 import type { Elements, RenderElement, RenderSurface } from 'claude-code'
 
 import type { CockpitLiveTurn, CockpitTimeline, CockpitTurnRow } from '../../types'
-import { formatDuration, spinnerText, summarize } from '../lib/rounds'
-import { describeLines, describeTokens, oneLine, sectionTotals } from '../lib/timeline'
+import { formatDuration, formatTally, roundBrief } from '../lib/rounds'
+import {
+  describeCalls,
+  describeContext,
+  describeLines,
+  describeTokens,
+  formatElapsed,
+  oneLine,
+  sessionTotals,
+} from '../lib/timeline'
 
 export type TimelineModel = {
   timeline: CockpitTimeline
   running: CockpitLiveTurn | null
-  isShowingCompacted: boolean
   columns: number
   maxTools: number
-  onToggleCompacted: () => unknown
+  /** How long the session has run; undefined when unknown. */
+  elapsedMs?: number
+  /** The context window's fill, as `$.session.usage()` reports it. */
+  context?: { tokens?: number; window?: number; percent?: number }
 }
 
-/** The second line of a row: rounds and calls per tool, tokens, edits. */
-export function rowDetails(row: CockpitTurnRow, maxTools: number): string {
-  const rounds = summarize(row.rounds, undefined, maxTools, row.isAborted)
-  const parts = [rounds ?? (row.isAborted ? 'no tool calls · interrupted' : 'no tool calls')]
-  parts.push(describeTokens(row.tokens))
-  if (row.edits !== null && row.edits.files.length > 0) {
-    const files = row.edits.files.length
-    parts.push(`${describeLines(row.edits)} in ${files} ${files === 1 ? 'file' : 'files'}`)
-  }
-  return parts.join(' · ')
+/** A row's right-hand side: `3 calls   5.6s  +18 −0`. */
+export function rowStats(row: CockpitTurnRow): string {
+  const parts = [describeCalls(row.rounds).padStart(8), formatDuration(row.durationMs).padStart(7)]
+  if (row.edits !== null && row.edits.files.length > 0) parts.push(describeLines(row.edits))
+  if (row.isAborted) parts.push('interrupted')
+  return parts.join('  ')
 }
 
 export function timelineTree(ui: Elements[RenderSurface], model: TimelineModel): RenderElement {
-  const { Box, Button, Text } = ui
-  const { timeline, running, isShowingCompacted, maxTools } = model
-  const columns = Math.max(20, model.columns)
+  const { Box, Text } = ui
+  const { timeline, running, maxTools } = model
+  const columns = Math.max(24, model.columns)
+  const totals = sessionTotals(timeline, running)
 
-  const turnRow = (row: CockpitTurnRow, number: number, isOld: boolean, key: string) => {
-    const time = formatDuration(row.durationMs)
-    const head = `#${number} ${oneLine(row.prompt || '(no prompt)', columns - time.length - String(number).length - 4)}`
-    return (
-      <Box key={key} flexDirection="column" marginBottom={1}>
-        <Box flexDirection="row" justifyContent="space-between">
-          <Text bold={!isOld} dimColor={isOld} wrap="truncate-end">
-            {head}
-          </Text>
-          <Text dimColor>{time}</Text>
-        </Box>
-        <Text dimColor>{'   ' + rowDetails(row, maxTools)}</Text>
-      </Box>
-    )
+  const field = (key: string, label: string, value: string) => (
+    <Box key={key} flexDirection="row">
+      <Text dimColor>{'  ' + label.padEnd(11)}</Text>
+      <Text wrap="truncate-end">{value}</Text>
+    </Box>
+  )
+
+  const overview: RenderElement[] = [
+    <Text key="title" bold>
+      {'Session' + (model.elapsedMs === undefined ? '' : ' · running ' + formatElapsed(model.elapsedMs))}
+    </Text>,
+    field('context', 'context', describeContext(model.context)),
+    field(
+      'turns',
+      'turns',
+      `${totals.turns}` +
+        (totals.compactions > 0 ? ` (${totals.compactions} ${totals.compactions === 1 ? 'compaction' : 'compactions'})` : '') +
+        ` · ${totals.calls} tool ${totals.calls === 1 ? 'call' : 'calls'}`,
+    ),
+  ]
+  if (totals.tools.length > 0) overview.push(field('tools', 'tools', formatTally(totals.tools, maxTools)))
+  overview.push(field('tokens', 'tokens', describeTokens(totals.tokens)))
+  if (totals.edits !== null) {
+    const files = totals.edits.files.length
+    overview.push(field('edited', 'edited', `${files} ${files === 1 ? 'file' : 'files'} ${describeLines(totals.edits)}`))
   }
 
-  // Newest first: the running turn, this segment's turns, then each compacted section.
-  const body: RenderElement[] = []
+  const line = (key: string, left: string, right: string, isDim: boolean, color?: string) => (
+    <Box key={key} flexDirection="row" justifyContent="space-between" gap={1}>
+      <Text dimColor={isDim} color={color} wrap="truncate-end">
+        {oneLine(left, columns - right.length - 1)}
+      </Text>
+      <Text dimColor>{right}</Text>
+    </Box>
+  )
+
+  // #1 at the top. Each compaction ends a segment; numbering starts again after it.
+  const rows: RenderElement[] = []
+  timeline.compacted.forEach((section, s) => {
+    section.rows.forEach((row, i) => rows.push(line(`old-${s}-${row.turnId}`, `#${i + 1} ${row.prompt || '(no prompt)'}`, rowStats(row), true)))
+    rows.push(
+      <Text key={'compacted-' + s} dimColor>
+        ── compacted ──
+      </Text>,
+    )
+  })
+  timeline.rows.forEach((row, i) => rows.push(line('row-' + row.turnId, `#${i + 1} ${row.prompt || '(no prompt)'}`, rowStats(row), false)))
   if (running !== null) {
-    const doing = spinnerText(running) ?? 'thinking'
-    body.push(
-      <Box key="running" flexDirection="column" marginBottom={1}>
-        <Text color="claude" wrap="truncate-end">
-          {`▶ #${timeline.rows.length + 1} ${oneLine(running.prompt || '(no prompt)', columns - 8)}`}
-        </Text>
-        <Text dimColor>{'   running · ' + doing + ' · ' + describeTokens(running.tokens)}</Text>
-      </Box>,
-    )
-  }
-  for (let i = timeline.rows.length - 1; i >= 0; i--) {
-    const row = timeline.rows[i]!
-    body.push(turnRow(row, i + 1, false, 'row-' + row.turnId))
-  }
-  for (let s = timeline.compacted.length - 1; s >= 0; s--) {
-    const section = timeline.compacted[s]!
-    const totals = sectionTotals(section.rows)
-    body.push(
-      <Box key={'compacted-' + s} flexDirection="row" gap={1} marginBottom={1}>
-        <Text dimColor>
-          {`── compacted · ${totals.turns} ${totals.turns === 1 ? 'turn' : 'turns'} · ${totals.calls} tool calls · ${describeTokens(totals.tokens)} · ${formatDuration(totals.durationMs)}`}
-        </Text>
-        <Button
-          key={'toggle-compacted-' + s}
-          label={isShowingCompacted ? 'Hide' : 'Show'}
-          plain
-          dimColor
-          onPress={model.onToggleCompacted}
-        />
-      </Box>,
-    )
-    if (isShowingCompacted) {
-      for (let i = section.rows.length - 1; i >= 0; i--) {
-        const row = section.rows[i]!
-        body.push(turnRow(row, i + 1, true, `old-${s}-${row.turnId}`))
-      }
-    }
+    rows.push(line('running', `▶ #${timeline.rows.length + 1} ${running.prompt || '(no prompt)'}`, roundBrief(running), false, 'claude'))
   }
 
-  if (body.length === 0) {
-    return (
-      <Box flexDirection="column">
-        <Text dimColor>No turns yet in this conversation.</Text>
-        <Text dimColor>Each turn shows up here when it ends: its prompt, tool calls, tokens, time and edited files.</Text>
+  return (
+    <Box flexDirection="column">
+      <Box key="overview" flexDirection="column" marginBottom={1}>
+        {overview}
       </Box>
-    )
-  }
-  return <Box flexDirection="column">{body}</Box>
+      {rows.length === 0 ? (
+        <Text key="empty" dimColor>
+          No turns yet in this conversation.
+        </Text>
+      ) : (
+        <Box key="turn-list" flexDirection="column">
+          {rows}
+        </Box>
+      )}
+    </Box>
+  )
 }

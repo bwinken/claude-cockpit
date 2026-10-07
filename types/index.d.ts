@@ -102,7 +102,7 @@ declare module 'claude-code' {
       live: CockpitLiveTurn | null
       turnLines: readonly CockpitTurnLine[]
       timeline: CockpitTimeline
-      showCompacted: boolean
+      tick: number
       lastEdits: CockpitEdits | null
       editsExpanded: boolean
       editsDismissed: boolean
