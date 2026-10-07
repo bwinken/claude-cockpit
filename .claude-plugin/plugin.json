@@ -1,0 +1,28 @@
+{
+  "name": "cockpit",
+  "version": "0.1.0",
+  "description": "Makes a Claude Code session's work visible: tool call batches on the spinner, a per-turn summary line, and more.",
+  "author": { "name": "bwinken" },
+  "homepage": "https://github.com/bwinken/claude-cockpit",
+  "repository": "https://github.com/bwinken/claude-cockpit",
+  "license": "MIT",
+  "keywords": ["mod", "spinner", "tool-calls", "observability"],
+  "types": "./types/index.d.ts",
+  "metadata": { "minClaudeCodeVersion": "2.1.292" },
+  "userConfig": {
+    "batchTrace": {
+      "type": "boolean",
+      "title": "Tool call batch tracing",
+      "description": "Show the tool call batches of the running turn after the spinner, and a summary line under each answer.",
+      "default": true
+    },
+    "batchTraceMaxShown": {
+      "type": "number",
+      "title": "Batches shown before truncating",
+      "description": "The longest batch sequence the summary line shows in full. Longer sequences keep their first and last batches and fold the middle.",
+      "default": 12,
+      "min": 4,
+      "max": 64
+    }
+  }
+}
