@@ -3,7 +3,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { CockpitTurnRow } from '../types'
 import { diffSnapshots, parseCounts, parseNumstat, snapshot } from '../hooks/lib/git'
 import type { GitRun } from '../hooks/lib/git'
-import { makeRound } from '../hooks/lib/rounds'
+import { makeRound, skillsOf } from '../hooks/lib/rounds'
 import {
   addRow,
   addUsage,
@@ -14,7 +14,11 @@ import {
   MAX_ROWS,
   NO_TOKENS,
   describeContext,
+  describeMcp,
+  describeSkills,
   formatElapsed,
+  inventoryFrom,
+  inventoryFromTools,
   oneLine,
   sessionTotals,
   shortPath,
@@ -82,6 +86,45 @@ describe('timeline helpers', () => {
     expect(totals.tokens).toEqual({ in: 151, out: 16, responses: 3 })
     // a.ts edited in two turns counts once, its lines summed.
     expect(totals.edits).toEqual({ files: [{ path: 'a.ts', added: 5, removed: 2 }], added: 5, removed: 2 })
+  })
+
+  test('lists skills and MCP servers, the used ones first', async () => {
+    const inventory = inventoryFrom(
+      [
+        { name: 'review-pr', source: 'plugin' },
+        { name: 'commit', source: 'userSettings' },
+        { name: 'init', source: 'built-in' },
+      ],
+      [
+        { name: 'mcp__github__get_issue', serverName: 'github' },
+        { name: 'mcp__github__create_pr', serverName: 'github' },
+        { name: 'mcp__claude_ai_Linear__list', serverName: 'claude.ai Linear' },
+      ],
+    )
+    expect(inventory.mcp).toEqual([
+      { name: 'claude.ai Linear', prefix: 'mcp__claude_ai_Linear__', tools: 1 },
+      { name: 'github', prefix: 'mcp__github__', tools: 2 },
+    ])
+    const used = addRow(EMPTY_TIMELINE, {
+      ...row('t1'),
+      rounds: [makeRound(['Skill', 'mcp__github__get_issue', 'mcp__github__create_pr'], ['commit'])],
+    })
+    expect(describeSkills(inventory, used, null)).toBe('3 · commit ✓, review-pr, init')
+    expect(describeMcp(inventory, used, null)).toBe('2 connected · github ×2 (2 tools), claude.ai Linear (1 tool)')
+    // Before the first read, and with nothing on hand.
+    expect(describeSkills(null, EMPTY_TIMELINE, null)).toBe('checking…')
+    expect(describeMcp(null, EMPTY_TIMELINE, null)).toBe('checking…')
+    expect(describeMcp({ skills: [], mcp: [] }, EMPTY_TIMELINE, null)).toBe('none connected')
+    expect(describeSkills({ skills: [], mcp: [] }, EMPTY_TIMELINE, null)).toBe('none listed')
+    // Past MAX_NAMES the rest are counted.
+    const many = { skills: Array.from({ length: 9 }, (_, i) => ({ name: 's' + i, source: 'plugin' })), mcp: [] }
+    expect(describeSkills(many, EMPTY_TIMELINE, null)).toBe('9 · s0, s1, s2, s3, s4, s5, +3 more')
+    // Without a breakdown the tool list still names the servers.
+    expect(inventoryFromTools([{ name: 'Read', mcp: false }, { name: 'mcp__github__get_issue', mcp: true }])).toEqual({
+      skills: [],
+      mcp: [{ name: 'github', prefix: 'mcp__github__', tools: 1 }],
+    })
+    expect(skillsOf([{ name: 'Skill', input: { skill: 'commit' } }, { name: 'Read', input: { skill: 'x' } }, { name: 'Skill', input: {} }])).toEqual(['commit'])
   })
 
   test('folds turns on compaction without dropping any', async () => {
@@ -281,6 +324,49 @@ describe('timeline pane', () => {
     }
   })
 
+  test('the overview shows the skills and MCP servers on hand, and which were used', async ($, on) => {
+    mock.clock(on)
+    on('session.usage', () => ({
+      value: {
+        ...USAGE_NOW.value,
+        context: {
+          ...USAGE_NOW.value.context,
+          breakdown: {
+            skills: {
+              totalSkills: 3,
+              includedSkills: 3,
+              tokens: 300,
+              skillFrontmatter: [
+                { name: 'review-pr', source: 'plugin', tokens: 100 },
+                { name: 'commit', source: 'userSettings', tokens: 100 },
+                { name: 'init', source: 'built-in', tokens: 100 },
+              ],
+            },
+            mcpTools: [
+              { name: 'mcp__github__get_issue', serverName: 'github', tokens: 50, isLoaded: true },
+              { name: 'mcp__github__create_pr', serverName: 'github', tokens: 50, isLoaded: false },
+              { name: 'mcp__linear__list', serverName: 'linear', tokens: 50, isLoaded: true },
+            ],
+            // Only the fields cockpit reads; the rest of the breakdown is left out.
+          } as never,
+        },
+      },
+    }))
+    on('session.surfaces', () => ({ value: ['terminal'] }))
+    on('process.run', notGit())
+    on('turn.start', ($, e) => ({ turnId: e.turnId }))
+    on('turn.step', stepsByTurn({ t1: [{ tools: ['Skill', 'mcp__github__get_issue'], inputs: [{ skill: 'commit' }, {}] }, { tools: [] }] }))
+    on('turn.complete', ($, e) => ({ text: e.answer }))
+
+    await runTurn($, 't1', 'commit the change and link the issue', 2)
+    for (const surface of SURFACES) {
+      const ui = await $.ui.mount(pane(surface))
+      expect(await ui.find({ type: 'Text', text: '3 · commit ✓, review-pr, init' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: '2 connected · github ×1 (2 tools), linear (1 tool)' })).toBeDefined()
+      await ui.unmount()
+    }
+  })
+
   test('without usage to read, the overview still draws', async ($, on) => {
     on('session.usage', () => ({ deny: 'not available' }))
     for (const surface of SURFACES) {
@@ -288,6 +374,7 @@ describe('timeline pane', () => {
       expect(await ui.find({ type: 'Text', text: 'Session' })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: 'not measured yet' })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: 'no token usage reported' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: 'checking…' })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: 'No turns yet in this conversation.' })).toBeDefined()
       await ui.unmount()
     }

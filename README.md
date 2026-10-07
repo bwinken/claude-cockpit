@@ -59,6 +59,8 @@ Session · running 12m
   context    45% of 1M (450k)
   turns      5 (1 compaction) · 23 tool calls
   tools      Read ×10, Edit ×6, Bash ×5, +2 more
+  skills     17 · release-notes ✓, commit ×2, review-pr, init, +13 more
+  mcp        2 connected · github ×3 (24 tools), weather (2 tools)
   tokens     340k in · 4.1k out
   edited     6 files +120 −8
 
@@ -69,7 +71,8 @@ Session · running 12m
 ▶ #2 fix the failing test               round 2 · 3 calls
 ```
 
-- **The overview** covers the whole session. It shows how long the session has run (updated every 30 seconds), how full the context window is, the number of turns and compactions, the total tool calls and the calls per tool, the tokens, and every file edited so far. A file edited in several turns counts once, with its lines summed. Tokens are summed over the main conversation's responses: `in` counts uncached, cache-read and cache-written input together, and `out` counts output. A provider or gateway that reports no cache fields, or zeros, still gives correct numbers. One that reports no usage at all shows `no token usage reported`.
+- **The overview** covers the whole session. It shows how long the session has run (updated every 30 seconds), how full the context window is, the number of turns and compactions, the total tool calls and the calls per tool, the skills and connected MCP servers, the tokens, and every file edited so far. A file edited in several turns counts once, with its lines summed. Tokens are summed over the main conversation's responses: `in` counts uncached, cache-read and cache-written input together, and `out` counts output. A provider or gateway that reports no cache fields, or zeros, still gives correct numbers. One that reports no usage at all shows `no token usage reported`.
+- **Skills and MCP servers** show what the session has on hand, with the ones used so far listed first: `✓` marks a skill Claude ran once, `×2` one it ran twice, and `×3` after a server counts the calls to its tools. Skills are the ones listed for Claude (the same list `/skills` shows), and a server counts as connected when its tools are listed. cockpit reads both when the session starts, after each turn and when you run `/cockpit`, counting locally without sending a request.
 - **Each turn is one line**, with #1 at the top: the prompt (cut to fit), its tool calls, how long it took, and its edits. The running turn is the last line, marked `▶`, with the round it's on.
 - **A compaction** draws a `── compacted ──` divider, and numbering starts again at #1 below it. Nothing is dropped. The pane keeps the last 200 turns. `/clear`, `/resume` and `/branch` start a new conversation, so the timeline starts empty.
 

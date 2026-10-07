@@ -5,6 +5,21 @@
 export type CockpitRound = {
   calls: number
   tools: Readonly<Record<string, number>>
+  /** The skills its Skill calls named, counted; absent when it made none. */
+  skills?: Readonly<Record<string, number>>
+}
+
+/** One connected MCP server: its name as /mcp lists it, and its tools' wire-name prefix. */
+export type CockpitMcpServer = {
+  name: string
+  prefix: string
+  tools: number
+}
+
+/** What the session has on hand: the skills listed for the model and the connected MCP servers. */
+export type CockpitInventory = {
+  skills: readonly { name: string; source: string }[]
+  mcp: readonly CockpitMcpServer[]
 }
 
 /**
@@ -103,6 +118,7 @@ declare module 'claude-code' {
       turnLines: readonly CockpitTurnLine[]
       timeline: CockpitTimeline
       tick: number
+      inventory: CockpitInventory | null
       lastEdits: CockpitEdits | null
       editsExpanded: boolean
       editsDismissed: boolean

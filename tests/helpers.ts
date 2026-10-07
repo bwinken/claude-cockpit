@@ -9,6 +9,8 @@ export type StepPlan = {
   tools: readonly string[]
   /** What `result.usage` reports; null when the response carried none. */
   usage?: unknown
+  /** Each tool call's arguments, by position; `{}` where left out. */
+  inputs?: readonly unknown[]
 }
 
 /** The Spinner as Claude Code hands it to `ui.render`. */
@@ -53,7 +55,7 @@ export function stepStub(plans: readonly StepPlan[]) {
       turnId: e.turnId,
       index: e.index,
       answer: plan.tools.length > 0 ? '' : 'done',
-      toolUses: plan.tools.map(name => ({ name, input: {} })),
+      toolUses: plan.tools.map((name, i) => ({ name, input: plan.inputs?.[i] ?? {} })),
       stopReason: plan.tools.length > 0 ? ('tool_use' as const) : ('end_turn' as const),
       usage,
     }

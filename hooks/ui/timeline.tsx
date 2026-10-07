@@ -19,6 +19,10 @@ import {
 export type TimelineModel = {
   timeline: CockpitTimeline
   running: CockpitLiveTurn | null
+  /** The overview's skills line: `14 · commit ×2, review-pr, +12 more`. */
+  skills: string
+  /** The overview's MCP line: `2 connected · github ×3 (24 tools), linear (8 tools)`. */
+  mcp: string
   columns: number
   maxTools: number
   /** How long the session has run; undefined when unknown. */
@@ -43,8 +47,13 @@ export function timelineTree(ui: Elements[RenderSurface], model: TimelineModel):
 
   const field = (key: string, label: string, value: string) => (
     <Box key={key} flexDirection="row">
-      <Text dimColor>{'  ' + label.padEnd(11)}</Text>
-      <Text wrap="truncate-end">{value}</Text>
+      {/* A fixed label column: a value that wraps keeps its indent. */}
+      <Box width={13} flexShrink={0}>
+        <Text dimColor>{'  ' + label}</Text>
+      </Box>
+      <Box flexGrow={1} flexShrink={1}>
+        <Text wrap="wrap">{value}</Text>
+      </Box>
     </Box>
   )
 
@@ -62,6 +71,8 @@ export function timelineTree(ui: Elements[RenderSurface], model: TimelineModel):
     ),
   ]
   if (totals.tools.length > 0) overview.push(field('tools', 'tools', formatTally(totals.tools, maxTools)))
+  overview.push(field('skills', 'skills', model.skills))
+  overview.push(field('mcp', 'mcp', model.mcp))
   overview.push(field('tokens', 'tokens', describeTokens(totals.tokens)))
   if (totals.edits !== null) {
     const files = totals.edits.files.length

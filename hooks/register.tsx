@@ -4,8 +4,18 @@ import type { EngineInterface, Register } from 'claude-code'
 import { readConfig } from './lib/config'
 import { diffSnapshots, snapshot } from './lib/git'
 import type { GitRun } from './lib/git'
-import { beginStep, endStep, spinnerText, startTurn, summarize, withStreaming } from './lib/rounds'
-import { addRow, addUsage, foldCompacted, oneLine, PROMPT_KEPT } from './lib/timeline'
+import { beginStep, endStep, skillsOf, spinnerText, startTurn, summarize, withStreaming } from './lib/rounds'
+import {
+  addRow,
+  addUsage,
+  describeMcp,
+  describeSkills,
+  foldCompacted,
+  inventoryFrom,
+  inventoryFromTools,
+  oneLine,
+  PROMPT_KEPT,
+} from './lib/timeline'
 import { isOlder, MIN_CLAUDE_CODE } from './lib/version'
 import { editsBandTree } from './ui/edits'
 import { timelineTree } from './ui/timeline'
@@ -15,6 +25,7 @@ export const live = atom({ plugin: 'cockpit', key: 'live' } as const, null)
 export const turnLines = atom({ plugin: 'cockpit', key: 'turnLines' } as const, [])
 export const timeline = atom({ plugin: 'cockpit', key: 'timeline' } as const, { compacted: [], rows: [] })
 const tick = atom({ plugin: 'cockpit', key: 'tick' } as const, 0)
+const inventory = atom({ plugin: 'cockpit', key: 'inventory' } as const, null)
 export const lastEdits = atom({ plugin: 'cockpit', key: 'lastEdits' } as const, null)
 export const editsExpanded = atom({ plugin: 'cockpit', key: 'editsExpanded' } as const, false)
 export const editsDismissed = atom({ plugin: 'cockpit', key: 'editsDismissed' } as const, false)
@@ -37,6 +48,31 @@ async function isTerminalOnly($: EngineInterface): Promise<boolean> {
     return surfaces.length > 0 && surfaces.every(surface => surface === 'terminal')
   } catch {
     return false
+  }
+}
+
+/**
+ * Re-reads the skills listed for the model and the connected MCP servers.
+ * The breakdown is counted locally (`summary`, no request is sent); where
+ * there is none, the tool list gives the servers and no skills.
+ */
+async function refreshInventory($: EngineInterface): Promise<void> {
+  try {
+    const usage = await $.session.usage({ breakdown: 'summary' })
+    const breakdown = usage.context.breakdown
+    if (breakdown !== undefined) {
+      const found = inventoryFrom(breakdown.skills?.skillFrontmatter, breakdown.mcpTools)
+      await update($, inventory, () => found)
+      return
+    }
+  } catch {
+    // Fall through to the tool list.
+  }
+  try {
+    const found = inventoryFromTools(await $.tool.list())
+    await update($, inventory, () => found)
+  } catch {
+    // Nothing to read: the overview keeps what it had.
   }
 }
 
@@ -72,6 +108,7 @@ export const register: Register = (on, options) => {
         description: 'Open the cockpit timeline pane (/cockpit close closes it)',
         argumentHint: '[close]',
       })
+      await refreshInventory($)
     }
     return next(e)
   })
@@ -111,8 +148,9 @@ export const register: Register = (on, options) => {
       const result = await stream.result
       // The finished response's tool_use list is the round, whatever streamed.
       const names = result.toolUses.map(use => use.name)
+      const skills = skillsOf(result.toolUses)
       await update($, live, turn => {
-        const ended = endStep(turn, e.turnId, names)
+        const ended = endStep(turn, e.turnId, names, skills)
         return { ...ended, tokens: addUsage(ended.tokens, result.usage) }
       })
       return result
@@ -163,6 +201,8 @@ export const register: Register = (on, options) => {
           edits,
         }
         await update($, timeline, current => addRow(current, row))
+        // MCP servers connect and skills load as the session goes: look again after each turn.
+        await refreshInventory($)
       }
       return reply
     })
@@ -201,6 +241,7 @@ export const register: Register = (on, options) => {
       }
       // Opened because the person asked: it seats at any width.
       await $.ui.open({ id: PANE_ID, title: PANE_TITLE })
+      await refreshInventory($)
       return {}
     })
 
@@ -216,14 +257,25 @@ export const register: Register = (on, options) => {
       } catch {
         // No usage to read: the overview leaves those two out.
       }
+      const turns = await read($, timeline)
+      const running = await read($, live)
+      const onHand = await read($, inventory)
       return timelineTree($.ui.resolve(e), {
-        timeline: await read($, timeline),
-        running: await read($, live),
+        timeline: turns,
+        running,
+        skills: describeSkills(onHand, turns, running),
+        mcp: describeMcp(onHand, turns, running),
         columns: e.props.bodyColumns,
         maxTools: config.roundTraceMaxTools,
         elapsedMs,
         context,
       })
+    })
+
+    // /clear, /resume and /branch reset $.state, the inventory with it: read it again.
+    on('classic.SessionStart', { source: ['clear', 'resume', 'fork'] }, async ($, e, next) => {
+      await refreshInventory($)
+      return next(e)
     })
 
     // A compaction keeps $.state: fold this segment's turns, then count afresh.

@@ -59,6 +59,8 @@ Session · running 12m
   context    45% of 1M (450k)
   turns      5 (1 compaction) · 23 tool calls
   tools      Read ×10, Edit ×6, Bash ×5, +2 more
+  skills     17 · release-notes ✓, commit ×2, review-pr, init, +13 more
+  mcp        2 connected · github ×3 (24 tools), weather (2 tools)
   tokens     340k in · 4.1k out
   edited     6 files +120 −8
 
@@ -69,7 +71,8 @@ Session · running 12m
 ▶ #2 fix the failing test               round 2 · 3 calls
 ```
 
-- **總覽**涵蓋整個 session：已執行多久（每 30 秒更新）、context window 的用量、turn 數與 compaction 次數、tool call 總數與各工具次數、token 數，以及至今編輯過的所有檔案。同一個檔案在多輪中被編輯只算一次，行數加總。token 數是主對話所有回應的加總：`in` 包含未快取、從快取讀取與寫入快取的輸入，`out` 是輸出。provider 或 gateway 不回報 cache 欄位或回報 0 時，數字照樣正確；完全沒有回報 usage 時顯示 `no token usage reported`。
+- **總覽**涵蓋整個 session：已執行多久（每 30 秒更新）、context window 的用量、turn 數與 compaction 次數、tool call 總數與各工具次數、skill 與已連線的 MCP server、token 數，以及至今編輯過的所有檔案。同一個檔案在多輪中被編輯只算一次，行數加總。token 數是主對話所有回應的加總：`in` 包含未快取、從快取讀取與寫入快取的輸入，`out` 是輸出。provider 或 gateway 不回報 cache 欄位或回報 0 時，數字照樣正確；完全沒有回報 usage 時顯示 `no token usage reported`。
+- **Skill 與 MCP server** 顯示 session 目前可用的項目，用過的排在前面：`✓` 表示 Claude 執行過一次的 skill，`×2` 表示執行過兩次；server 後面的 `×3` 是呼叫它的工具的次數。skill 是列給 Claude 的那份清單（和 `/skills` 相同）；server 的工具出現在工具清單中，就算已連線。cockpit 在 session 開始、每一輪結束與執行 `/cockpit` 時讀取這兩份資料，在本機計算，不會送出請求。
 - **每一輪一行**，#1 在最上面：prompt（依寬度截斷）、tool call 數、耗時與編輯的檔案。進行中的那一輪在最後一行，以 `▶` 標示，並顯示目前的 round。
 - **compaction** 時會畫一條 `── compacted ──` 分隔線，線下的編號從 #1 重新開始，不會刪除任何資料。pane 最多保留最近 200 輪。`/clear`、`/resume`、`/branch` 會開始新的對話，所以 timeline 從空白開始。
 

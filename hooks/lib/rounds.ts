@@ -24,11 +24,22 @@ export function toolLabel(name: string): string {
   return mcp ? mcp[1] + ':' + mcp[2] : name
 }
 
-/** A round from the tool names one response asked for. */
-export function makeRound(names: readonly string[]): CockpitRound {
+/** A round from the tool names one response asked for, and the skills its Skill calls named. */
+export function makeRound(names: readonly string[], skillNames: readonly string[] = []): CockpitRound {
   const tools: Record<string, number> = {}
   for (const name of names) tools[name] = (tools[name] ?? 0) + 1
-  return { calls: names.length, tools }
+  if (skillNames.length === 0) return { calls: names.length, tools }
+  const skills: Record<string, number> = {}
+  for (const name of skillNames) skills[name] = (skills[name] ?? 0) + 1
+  return { calls: names.length, tools, skills }
+}
+
+/** The skill each Skill call of a response names, in order. */
+export function skillsOf(uses: ReadonlyArray<{ name: string; input: unknown }>): string[] {
+  return uses.flatMap(use => {
+    const skill = use.name === 'Skill' ? (use.input as { skill?: unknown } | null)?.skill : undefined
+    return typeof skill === 'string' && skill !== '' ? [skill] : []
+  })
 }
 
 /** `parallel processing 3 tool calls`, or `processing 1 tool call`. */
@@ -138,8 +149,13 @@ export function withStreaming(live: CockpitLiveTurn | null, turnId: string, seen
 }
 
 /** The record once a response is whole: one that asked for tools adds a round. */
-export function endStep(live: CockpitLiveTurn | null, turnId: string, names: readonly string[]): CockpitLiveTurn {
+export function endStep(
+  live: CockpitLiveTurn | null,
+  turnId: string,
+  names: readonly string[],
+  skillNames: readonly string[] = [],
+): CockpitLiveTurn {
   const turn = turnOf(live, turnId)
   if (names.length === 0) return { ...turn, streaming: 0 }
-  return { ...turn, rounds: [...turn.rounds, makeRound(names)], streaming: null }
+  return { ...turn, rounds: [...turn.rounds, makeRound(names, skillNames)], streaming: null }
 }
