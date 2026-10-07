@@ -1,0 +1,74 @@
+{
+  "name": "cockpit",
+  "version": "0.1.0",
+  "description": "Makes a Claude Code session's work visible: the running round of tool calls, a per-turn summary, a session timeline, the files each turn edited, and a guard for destructive tool calls.",
+  "author": {
+    "name": "bwinken"
+  },
+  "homepage": "https://github.com/bwinken/claude-cockpit",
+  "repository": "https://github.com/bwinken/claude-cockpit",
+  "license": "MIT",
+  "keywords": [
+    "mod",
+    "spinner",
+    "tool-calls",
+    "observability"
+  ],
+  "types": "./types/index.d.ts",
+  "metadata": {
+    "minClaudeCodeVersion": "2.1.292"
+  },
+  "userConfig": {
+    "roundTrace": {
+      "type": "boolean",
+      "title": "Tool call round tracing",
+      "description": "While a turn runs, show the current round of tool calls after the spinner; when it ends, add a short summary line with the calls per tool.",
+      "default": true
+    },
+    "roundTraceMaxTools": {
+      "type": "number",
+      "title": "Tools named in the summary",
+      "description": "How many tool names the summary line lists, most used first. The rest are counted as +k more.",
+      "default": 5,
+      "min": 1,
+      "max": 20
+    },
+    "timeline": {
+      "type": "boolean",
+      "title": "Timeline pane",
+      "description": "Keep a row per turn (prompt, tool calls, tokens, time, edited files) and add the /cockpit command that opens it in a pane.",
+      "default": true
+    },
+    "editedFiles": {
+      "type": "boolean",
+      "title": "Edited files band",
+      "description": "After each turn in a git repository, show above the prompt which files the turn changed and by how many lines. Outside a git repository nothing is shown.",
+      "default": true
+    },
+    "gate": {
+      "type": "boolean",
+      "title": "Tool guard",
+      "description": "Refuse clearly destructive tool calls (rm -rf, git reset --hard, force push, file writes outside the project), plus any deny rules in your rules file. Every decision is logged and kept in an audit trail.",
+      "default": true
+    },
+    "gateAutoModePrompt": {
+      "type": "boolean",
+      "title": "Ask when auto mode blocks a call",
+      "description": "When the auto mode classifier blocks a tool call, ask whether to run it once anyway. Only in auto mode; Claude Code's own permission prompts are never asked twice.",
+      "default": true
+    },
+    "gateRulesFile": {
+      "type": "string",
+      "title": "Guard rules file",
+      "description": "Your rules file: deny and allow rules, built-in rules to turn off, extra writable directories. A project's .claude/cockpit-rules.json can only add deny rules.",
+      "default": "~/.claude/cockpit-rules.json"
+    },
+    "gateDisabledRules": {
+      "type": "string",
+      "multiple": true,
+      "title": "Built-in guard rules to turn off",
+      "description": "Any of rm-rf, git-reset-hard, git-push-force, write-outside-project.",
+      "default": []
+    }
+  }
+}

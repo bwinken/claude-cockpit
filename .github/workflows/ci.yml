@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: validate and test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # The oldest Claude Code cockpit supports; the version the types and tests were written against.
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code@2.1.292
+      - run: claude --version
+      - name: Validate the manifest, hooks module and state contract
+        run: claude plugin validate --strict .
+      - name: Run the tests
+        run: claude plugin test .
+
+  version:
+    name: version bumped with the mod
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # Installed users stay on the version in plugin.json until it changes, so a change to the
+      # mod without a new version never reaches them.
+      - name: Check plugin.json's version
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if ! git cat-file -e "$BASE:.claude-plugin/plugin.json" 2>/dev/null; then
+            echo "No plugin.json on the base branch yet: nothing to compare."
+            exit 0
+          fi
+          if git diff --quiet "$BASE" HEAD -- hooks types .claude-plugin/plugin.json; then
+            echo "The mod itself didn't change."
+            exit 0
+          fi
+          old=$(git show "$BASE:.claude-plugin/plugin.json" | node -e "process.stdout.write(JSON.parse(require('fs').readFileSync(0, 'utf8')).version ?? '')")
+          new=$(node -e "process.stdout.write(require('./.claude-plugin/plugin.json').version ?? '')")
+          if [ "$old" = "$new" ]; then
+            echo "::error file=.claude-plugin/plugin.json::The mod changed but its version is still $new. Bump \"version\" in .claude-plugin/plugin.json, or installed users won't get this change."
+            exit 1
+          fi
+          echo "version $old -> $new"

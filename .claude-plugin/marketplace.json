@@ -1,0 +1,14 @@
+{
+  "name": "claude-cockpit",
+  "description": "Cockpit: a Claude Code mod that makes a session's work visible.",
+  "owner": {
+    "name": "bwinken"
+  },
+  "plugins": [
+    {
+      "name": "cockpit",
+      "source": "./",
+      "description": "Makes a Claude Code session's work visible."
+    }
+  ]
+}
