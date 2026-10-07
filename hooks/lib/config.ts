@@ -6,6 +6,8 @@ import type { PluginOptions } from 'claude-code'
 export type CockpitConfig = {
   roundTrace: boolean
   roundTraceMaxTools: number
+  timeline: boolean
+  editedFiles: boolean
 }
 
 function flag(value: unknown, fallback: boolean): boolean {
@@ -21,5 +23,7 @@ export function readConfig(options: PluginOptions): CockpitConfig {
   return {
     roundTrace: flag(options.roundTrace, true),
     roundTraceMaxTools: number(options.roundTraceMaxTools, 5, 1, 20),
+    timeline: flag(options.timeline, true),
+    editedFiles: flag(options.editedFiles, true),
   }
 }

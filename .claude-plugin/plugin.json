@@ -1,7 +1,7 @@
 {
   "name": "cockpit",
   "version": "0.1.0",
-  "description": "Makes a Claude Code session's work visible: the running round of tool calls on the spinner, a per-turn summary line, and more.",
+  "description": "Makes a Claude Code session's work visible: the running round of tool calls, a per-turn summary, a timeline pane and the files each turn edited.",
   "author": {
     "name": "bwinken"
   },
@@ -32,6 +32,18 @@
       "default": 5,
       "min": 1,
       "max": 20
+    },
+    "timeline": {
+      "type": "boolean",
+      "title": "Timeline pane",
+      "description": "Keep a row per turn (prompt, tool calls, tokens, time, edited files) and add the /cockpit command that opens it in a pane.",
+      "default": true
+    },
+    "editedFiles": {
+      "type": "boolean",
+      "title": "Edited files band",
+      "description": "After each turn in a git repository, show above the prompt which files the turn changed and by how many lines. Outside a git repository nothing is shown.",
+      "default": true
     }
   }
 }

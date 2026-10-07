@@ -107,8 +107,8 @@ export function summarize(
 }
 
 /** A new turn's record. */
-export function startTurn(turnId: string): CockpitLiveTurn {
-  return { turnId, rounds: [], streaming: null }
+export function startTurn(turnId: string, prompt = ''): CockpitLiveTurn {
+  return { turnId, prompt, rounds: [], streaming: null, tokens: { in: 0, out: 0, responses: 0 } }
 }
 
 function turnOf(live: CockpitLiveTurn | null, turnId: string): CockpitLiveTurn {

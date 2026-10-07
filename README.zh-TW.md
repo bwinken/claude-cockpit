@@ -50,8 +50,31 @@ claude --plugin-dir ./claude-cockpit
 | `roundTrace` | `true` | 開關 round 追蹤 |
 | `roundTraceMaxTools` | `5` | 摘要列出的工具名稱數量（依使用次數排序），範圍 1 到 20，其餘計為 `+k more` |
 
+### Timeline pane
+
+輸入 `/cockpit` 開啟 pane，每一輪一列，最新的在最上面。`/cockpit close` 關閉。cockpit 不會自己打開這個 pane，窄的終端機因此不受影響。fullscreen 版面下 pane 停靠在 transcript 旁邊，其他情況則開在 prompt 上方。
+
+每一列有 prompt（依寬度截斷）、該輪耗時，第二行列出 round 數與各工具呼叫次數、token 數和編輯過的檔案，例如 `1 round · 3 tool calls (Edit ×2, Write) · 64.1k in · 655 out · +18 −0 in 3 files`。token 數是該輪主對話所有回應的加總：`in` 包含未快取、從快取讀取與寫入快取的輸入，`out` 是輸出。provider 或 gateway 不回報 cache 欄位或回報 0 時，數字照樣正確；完全沒有回報 usage 時顯示 `no token usage reported`。turn 進行中時，它列在最上面，並顯示正在做的事。
+
+對話被 compact 時，到目前為止的 turn 會摺疊到一個 `── compacted · …` 標題下，標題附總計和 **Show** 按鈕，編號從 #1 重新開始，不會刪除任何資料。pane 最多保留最近 200 輪。`/clear`、`/resume`、`/branch` 會開始新的對話，所以 timeline 從空白開始。
+
+| 選項 | 預設 | 作用 |
+| :- | :- | :- |
+| `timeline` | `true` | 記錄 timeline 並加入 `/cockpit` 指令 |
+
+### Edited files band
+
+在 git repo 中，每一輪結束後，prompt 上方的 band 會顯示這一輪改了什麼，例如 `Edited 3 files +18 −0 [ Show files ] [ Dismiss ]`。**Show files** 列出每個檔案的行數變化。用鍵盤時按 ctrl+x tab 移到 band。turn 進行中、問卷占用 band，或你正在檢視 subagent 的 transcript 時，band 會隱藏。其他 mod 畫在 band 裡的內容會保留。
+
+cockpit 比對 turn 開始與結束時的工作目錄快照，所以用 Bash 指令改的檔案、新增的檔案和尚未追蹤的檔案都會算到。被 `.gitignore` 排除的檔案不算。取快照不會改動 index、`HEAD`、stash 清單或任何檔案。不在 git repo 中時，band 不會出現。
+
+| 選項 | 預設 | 作用 |
+| :- | :- | :- |
+| `editedFiles` | `true` | 取快照並顯示 band。關閉時完全不執行 git |
+
 ## 已知限制
 
+- **編輯的檔案由 git 計算。** turn 進行中你手動做的修改，也會算在那一輪。改名會顯示成刪除一個檔案、新增一個檔案。未追蹤的檔案超過 500 個時不列入計算。有變動的未追蹤檔案超過 50 個時，其餘的只列檔名、沒有行數。每一輪的開始和結束各要執行幾個 git 指令，在非常大的 repo 中會比較久。
 - **round 的邊界取決於 model 的回應。** cockpit 計算每次回應裡的 `tool_use` block。由 API 端自己執行的工具（例如 advisor）不列入計算。
 - **Desktop app。** 測試只確認 cockpit 交給 Desktop spinner 的樹，app 實際怎麼畫出這段文字，要在真實 session 中才看得到。在 Desktop app 中，spinner 的字詞描述的是目前的步驟，而不是動畫用的動詞。
 - **檢視 subagent 時。** spinner 不會標明它屬於哪個 loop，所以你在檢視 subagent 的 transcript 時，那裡的 spinner 顯示的是主對話的 round。

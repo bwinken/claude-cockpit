@@ -50,8 +50,31 @@ A **round** is the set of tool calls that Claude asks for in a single model resp
 | `roundTrace` | `true` | Turns round tracing on or off |
 | `roundTraceMaxTools` | `5` | How many tool names the summary lists, most used first, from 1 to 20. The rest are counted as `+k more` |
 
+### Timeline pane
+
+Run `/cockpit` to open a pane with one row per turn, newest first. `/cockpit close` closes it. cockpit never opens the pane on its own, so a narrow terminal stays as it is. In the fullscreen layout the pane docks beside the transcript; otherwise it opens above the prompt.
+
+Each row has the prompt (cut to fit), how long the turn took, and a second line with its rounds and calls per tool, its tokens, and its edited files, as in `1 round · 3 tool calls (Edit ×2, Write) · 64.1k in · 655 out · +18 −0 in 3 files`. Tokens are summed over the turn's main-conversation responses: `in` counts uncached, cache-read and cache-written input together, and `out` counts output. A provider or gateway that reports no cache fields, or zeros, still gives correct numbers, and one that reports no usage at all shows `no token usage reported`. While a turn runs, it's listed at the top with what it's doing.
+
+When the conversation is compacted, the turns so far fold under one `── compacted · …` header with their totals and a **Show** button, and numbering starts again at #1. Nothing is dropped. The pane keeps the last 200 turns. `/clear`, `/resume` and `/branch` start a new conversation, so the timeline starts empty.
+
+| Option | Default | What it does |
+| :- | :- | :- |
+| `timeline` | `true` | Keeps the timeline and adds the `/cockpit` command |
+
+### Edited files band
+
+After each turn in a git repository, a band above the prompt shows what the turn changed, as in `Edited 3 files +18 −0 [ Show files ] [ Dismiss ]`. **Show files** lists each file with its line counts. Press ctrl+x tab to reach the band from the keyboard. The band hides while a turn runs, while a survey uses the band, and while you view a subagent's transcript. Whatever other mods draw in the band stays.
+
+cockpit compares a snapshot of the working tree from the start of the turn with one from its end, so changes made with Bash commands count too, as do new files and files that aren't tracked yet. Files that `.gitignore` excludes don't count. Taking a snapshot doesn't change the index, `HEAD`, the stash list or any file. Outside a git repository the band never appears.
+
+| Option | Default | What it does |
+| :- | :- | :- |
+| `editedFiles` | `true` | Takes the snapshots and shows the band. When it's off, git never runs |
+
 ## Known limitations
 
+- **Edited files are counted by git.** Edits you make by hand while a turn runs count as that turn's. A rename shows as one file removed and one added. Past 500 untracked files, untracked files aren't counted. Past 50 changed untracked files, the rest are listed without line counts. Taking the snapshots runs a few git commands at the start and end of each turn, which takes longer in a very large repository.
 - **Round boundaries come from the model's response.** cockpit counts the `tool_use` blocks of each response. Tool calls that the API runs on its own side, such as the advisor, don't count.
 - **Desktop app.** The tests check the tree cockpit gives the Desktop app's spinner, but only a real session shows how the app draws the added text. In the Desktop app, the spinner's word describes the current step instead of the animated verb.
 - **Subagent views.** The spinner doesn't say whose loop it belongs to, so a spinner drawn while you view a subagent's transcript shows the main conversation's round.

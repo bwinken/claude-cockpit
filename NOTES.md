@@ -27,3 +27,39 @@ say they describe v2.1.290.
 - `turn.step` results list in `serverToolUses` the tool calls the API ran
   itself, such as the advisor. Those never raise `tool.call`, and `toolUses`
   leaves them out.
+
+## Rules the validator enforces that the docs don't spell out
+
+Found while building Phase 2. `claude plugin validate` and the engine refuse a
+module that breaks these:
+
+- **`$` stays in one file.** `$` may be passed to a function declared in the
+  same file, never to one imported from another file. That's why the UI files
+  (`hooks/ui/*.tsx`) take the surface's element table, plain data and
+  callbacks, and `hooks/register.tsx` makes every `$` call itself.
+- **State references stay in one file.** An `atom` (or a `{ plugin, key }`
+  reference) handed to `read`/`update` must be declared in the file that
+  makes the call, so all of cockpit's atoms live in `register.tsx`.
+- **Matchers are read from source.** A matcher value imported from another
+  file shows up as `?` in `validate`'s report, as in
+  `ui.render{component=Pane, requestId=?}`. Write it as a literal.
+
+## The test kit vs. a session
+
+- A `turn.step` stub's `stop` chunk must carry `usage: null` or all four token
+  counts. Partial usage (no cache fields) can only ride on the step's result,
+  which is where cockpit reads it.
+- `$.command.run` from a test needs `origin` and `presentation` to
+  type-check, although the docs' examples pass only `command` and `args`.
+
+## git notes for the edited-files band
+
+- `git diff --numstat -z` between two blobs prints an empty path field
+  (`3\t0\t\0blobA\0blobB\0`), so blob-to-blob diffs run without `-z` and
+  read the first line's counts.
+- `git stash create` writes a commit of the working tree but adds no stash
+  entry and changes neither the index nor the files. Checked against a real
+  repository: `git status` and `git stash list` read the same before and
+  after. cockpit runs every git command with `GIT_OPTIONAL_LOCKS=0`, which
+  tells git to skip the locks it takes only for optional work. Whether that
+  keeps `stash create` from ever taking the index lock hasn't been verified.
