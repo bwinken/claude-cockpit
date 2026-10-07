@@ -44,7 +44,7 @@ export function editsBandTree(ui: Elements[RenderSurface], model: EditsModel, th
         <Box key={'edit-' + file.path} flexDirection="row" justifyContent="space-between">
           <Text wrap="truncate-start">{'  ' + shortPath(file.path, columns - lines.length - 4)}</Text>
           {file.added === null && file.removed === null ? (
-            <Text dimColor>binary</Text>
+            <Text dimColor>{lines}</Text>
           ) : (
             <Box flexDirection="row" gap={1}>
               <Text color="success">{'+' + count(file.added)}</Text>
