@@ -1,28 +1,37 @@
 {
   "name": "cockpit",
   "version": "0.1.0",
-  "description": "Makes a Claude Code session's work visible: tool call batches on the spinner, a per-turn summary line, and more.",
-  "author": { "name": "bwinken" },
+  "description": "Makes a Claude Code session's work visible: the running round of tool calls on the spinner, a per-turn summary line, and more.",
+  "author": {
+    "name": "bwinken"
+  },
   "homepage": "https://github.com/bwinken/claude-cockpit",
   "repository": "https://github.com/bwinken/claude-cockpit",
   "license": "MIT",
-  "keywords": ["mod", "spinner", "tool-calls", "observability"],
+  "keywords": [
+    "mod",
+    "spinner",
+    "tool-calls",
+    "observability"
+  ],
   "types": "./types/index.d.ts",
-  "metadata": { "minClaudeCodeVersion": "2.1.292" },
+  "metadata": {
+    "minClaudeCodeVersion": "2.1.292"
+  },
   "userConfig": {
-    "batchTrace": {
+    "roundTrace": {
       "type": "boolean",
-      "title": "Tool call batch tracing",
-      "description": "Show the tool call batches of the running turn after the spinner, and a summary line under each answer.",
+      "title": "Tool call round tracing",
+      "description": "While a turn runs, show the current round of tool calls after the spinner; when it ends, add a short summary line with the calls per tool.",
       "default": true
     },
-    "batchTraceMaxShown": {
+    "roundTraceMaxTools": {
       "type": "number",
-      "title": "Batches shown before truncating",
-      "description": "The longest batch sequence the summary line shows in full. Longer sequences keep their first and last batches and fold the middle.",
-      "default": 12,
-      "min": 4,
-      "max": 64
+      "title": "Tools named in the summary",
+      "description": "How many tool names the summary line lists, most used first. The rest are counted as +k more.",
+      "default": 5,
+      "min": 1,
+      "max": 20
     }
   }
 }

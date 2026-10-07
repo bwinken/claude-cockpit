@@ -1,13 +1,23 @@
 /**
- * The tool call batches of the main loop's running turn.
+ * One round of tool calls: the calls one model response asked for, counted
+ * per tool name (`Read`, `Bash`, `mcp__server__tool`).
+ */
+export type CockpitRound = {
+  calls: number
+  tools: Readonly<Record<string, number>>
+}
+
+/**
+ * The tool call rounds of the main loop's running turn.
  *
- * A batch is the tool calls one model response asked for. `batches` holds
- * the finished steps' sizes in order; `streaming` counts the tool_use blocks
- * of the response still arriving, or is null between responses.
+ * `rounds` holds the finished responses that asked for tools, in order.
+ * `streaming` counts the tool_use blocks of the response in flight: 0 while
+ * a request is out and has asked for none yet, null between responses,
+ * while the last round's tools run.
  */
 export type CockpitLiveTurn = {
   turnId: string
-  batches: readonly number[]
+  rounds: readonly CockpitRound[]
   streaming: number | null
 }
 

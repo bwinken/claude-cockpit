@@ -4,8 +4,8 @@
 
 **cockpit** 是一個 [Claude Code mod](https://code.claude.com/docs/en/plugins/mods/overview)，讓 session 的執行過程在發生的當下就看得見。終端機與 Claude Code Desktop app 都能使用，不限定任何模型、provider 或 gateway。
 
-<!-- 截圖：spinner 顯示 batch 序列，例如「Sauteing… ∥3 → ∥2 → 1」 -->
-> 📷 _截圖佔位：spinner 上的 batch 追蹤_
+<!-- 截圖：round 進行中的 spinner，例如「Sauteing… round 2 · parallel processing 3 tool calls」 -->
+> 📷 _截圖佔位：spinner 上的 round 追蹤_
 
 <!-- 截圖：回答下方的摘要列 -->
 > 📷 _截圖佔位：每輪摘要列_
@@ -38,23 +38,23 @@ claude --plugin-dir ./claude-cockpit
 
 每個功能都可以單獨開關。在 `/config` 修改（每個選項各占一列），或在 `~/.claude/settings.json` 的 `pluginConfigs` 底下修改。使用 `--plugin-dir` 時，key 是 `cockpit@inline`。
 
-### Tool call batch 追蹤
+### Tool call round 追蹤
 
-**batch** 是 Claude 在同一次 model 回應中發出的所有 tool call。只計算主對話，subagent 的請求不列入。
+**round** 是 Claude 在同一次 model 回應中發出的所有 tool call。只計算主對話，subagent 的請求不列入。
 
-- **turn 進行中**：spinner 保留原本的動畫、字詞與計數器，cockpit 在後面加上 batch 序列，例如 `Sauteing… ∥3 → ∥2 → 1`。`∥3` 表示同一次回應發出三個 tool call，`1` 表示單一呼叫。最新的 batch 在回應還在串流時就開始計數。終端機較窄時，序列中段會摺成 `…+k`。
-- **turn 結束時**：cockpit 在回答下方加一行，列出完整序列、總 call 數與耗時，例如 `Batches ∥3 → ∥2 → 1 · 6 calls · 12.3s`。沒有呼叫任何工具的 turn 不加這一行；被中斷的 turn 會在行尾標示 `interrupted`。序列超過設定的長度時，摘要列同樣保留頭尾的 batch、摺疊中段。
+- **round 進行中**：spinner 保留原本的動畫、字詞與計數器，cockpit 在後面加上這一輪正在做的事，例如 `Sauteing… round 2 · parallel processing 3 tool calls` 或 `round 3 · processing 1 tool call`。數量隨 model 回應的串流增加。兩輪之間，model 還在產生下一個回應時，spinner 不加任何內容。終端機寬度不到 90 欄時省略 round 編號。
+- **turn 結束時**：cockpit 在回答下方加一行簡短摘要，列出 round 數、tool call 總數、各工具的呼叫次數與耗時，例如 `3 rounds · 6 tool calls (Read ×4, Bash ×2) · 5.8s`。沒有呼叫任何工具的 turn 不加這一行；被中斷的 turn 會在行尾標示 `interrupted`。MCP 工具顯示為 `server:tool`。
 
 | 選項 | 預設 | 作用 |
 | :- | :- | :- |
-| `batchTrace` | `true` | 開關 batch 追蹤 |
-| `batchTraceMaxShown` | `12` | 摘要列完整顯示的最長序列，範圍 4 到 64 |
+| `roundTrace` | `true` | 開關 round 追蹤 |
+| `roundTraceMaxTools` | `5` | 摘要列出的工具名稱數量（依使用次數排序），範圍 1 到 20，其餘計為 `+k more` |
 
 ## 已知限制
 
-- **batch 的邊界取決於 model 的回應。** cockpit 計算每次回應裡的 `tool_use` block。由 API 端自己執行的工具（例如 advisor）不列入計算。
+- **round 的邊界取決於 model 的回應。** cockpit 計算每次回應裡的 `tool_use` block。由 API 端自己執行的工具（例如 advisor）不列入計算。
 - **Desktop app。** 測試只確認 cockpit 交給 Desktop spinner 的樹，app 實際怎麼畫出這段文字，要在真實 session 中才看得到。在 Desktop app 中，spinner 的字詞描述的是目前的步驟，而不是動畫用的動詞。
-- **檢視 subagent 時。** spinner 不會標明它屬於哪個 loop，所以你在檢視 subagent 的 transcript 時，那裡的 spinner 顯示的是主對話的 batch。
+- **檢視 subagent 時。** spinner 不會標明它屬於哪個 loop，所以你在檢視 subagent 的 transcript 時，那裡的 spinner 顯示的是主對話的 round。
 - **摘要列的標籤。** Claude Code 會用所有掛在 turn 結束事件上的 mod 名稱標示這一行，例如 `cockpit+cc-plugin-agents-md:`。
 
 ## 若你的組織管理 Claude Code

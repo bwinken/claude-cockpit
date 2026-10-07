@@ -4,8 +4,8 @@
 import type { PluginOptions } from 'claude-code'
 
 export type CockpitConfig = {
-  batchTrace: boolean
-  batchTraceMaxShown: number
+  roundTrace: boolean
+  roundTraceMaxTools: number
 }
 
 function flag(value: unknown, fallback: boolean): boolean {
@@ -19,7 +19,7 @@ function number(value: unknown, fallback: number, min: number, max: number): num
 
 export function readConfig(options: PluginOptions): CockpitConfig {
   return {
-    batchTrace: flag(options.batchTrace, true),
-    batchTraceMaxShown: number(options.batchTraceMaxShown, 12, 4, 64),
+    roundTrace: flag(options.roundTrace, true),
+    roundTraceMaxTools: number(options.roundTraceMaxTools, 5, 1, 20),
   }
 }

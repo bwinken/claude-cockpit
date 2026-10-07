@@ -4,8 +4,8 @@
 
 **cockpit** is a [Claude Code mod](https://code.claude.com/docs/en/plugins/mods/overview) that makes a session's work visible while it happens. It runs in the terminal and in the Claude Code Desktop app, and works with any model, provider, or gateway.
 
-<!-- Screenshot: the spinner showing a batch sequence, e.g. "Sauteing… ∥3 → ∥2 → 1" -->
-> 📷 _Screenshot placeholder: spinner with batch trace_
+<!-- Screenshot: the spinner during a round, e.g. "Sauteing… round 2 · parallel processing 3 tool calls" -->
+> 📷 _Screenshot placeholder: spinner with round tracing_
 
 <!-- Screenshot: the summary line under an answer -->
 > 📷 _Screenshot placeholder: per-turn summary line_
@@ -38,23 +38,23 @@ claude --plugin-dir ./claude-cockpit
 
 Each feature can be turned on or off on its own. Change a setting in `/config` (each option is a row there) or under `pluginConfigs` in `~/.claude/settings.json`. With `--plugin-dir`, the key is `cockpit@inline`.
 
-### Tool call batch tracing
+### Tool call round tracing
 
-A **batch** is the set of tool calls that Claude asks for in a single model response. Only the main conversation is counted: subagent requests are left out.
+A **round** is the set of tool calls that Claude asks for in a single model response. Only the main conversation is counted: subagent requests are left out.
 
-- **While a turn runs**, the spinner keeps its own animation, word, and counters, and cockpit adds the batch sequence after them, as in `Sauteing… ∥3 → ∥2 → 1`. `∥3` means three tool calls in one response, and `1` means a single call. The newest batch is counted while the response is still streaming. On a narrow terminal, the middle of the sequence folds into `…+k`.
-- **When the turn ends**, cockpit adds one line under the answer with the whole sequence, the total number of calls, and how long the turn took, as in `Batches ∥3 → ∥2 → 1 · 6 calls · 12.3s`. A turn that made no tool calls gets no line, and an interrupted turn ends its line with `interrupted`. Past the configured length, the summary also keeps the first and last batches and folds the middle.
+- **While a round runs**, the spinner keeps its own animation, word, and counters, and cockpit adds what the round is doing after them, as in `Sauteing… round 2 · parallel processing 3 tool calls` or `round 3 · processing 1 tool call`. The count goes up as the model's response streams in. Between rounds, while the model works on its next response, the spinner shows nothing extra. Below 90 columns, the round number is left out.
+- **When the turn ends**, cockpit adds a short summary under the answer: how many rounds there were, how many tool calls in total, the calls per tool, and how long the turn took, as in `3 rounds · 6 tool calls (Read ×4, Bash ×2) · 5.8s`. A turn that made no tool calls gets no line, and an interrupted turn ends its line with `interrupted`. MCP tools appear as `server:tool`.
 
 | Option | Default | What it does |
 | :- | :- | :- |
-| `batchTrace` | `true` | Turns batch tracing on or off |
-| `batchTraceMaxShown` | `12` | The longest sequence the summary line shows in full, from 4 to 64 |
+| `roundTrace` | `true` | Turns round tracing on or off |
+| `roundTraceMaxTools` | `5` | How many tool names the summary lists, most used first, from 1 to 20. The rest are counted as `+k more` |
 
 ## Known limitations
 
-- **Batch boundaries come from the model's response.** cockpit counts the `tool_use` blocks of each response. Tool calls that the API runs on its own side, such as the advisor, don't count.
+- **Round boundaries come from the model's response.** cockpit counts the `tool_use` blocks of each response. Tool calls that the API runs on its own side, such as the advisor, don't count.
 - **Desktop app.** The tests check the tree cockpit gives the Desktop app's spinner, but only a real session shows how the app draws the added text. In the Desktop app, the spinner's word describes the current step instead of the animated verb.
-- **Subagent views.** The spinner doesn't say whose loop it belongs to, so a spinner drawn while you view a subagent's transcript shows the main conversation's batches.
+- **Subagent views.** The spinner doesn't say whose loop it belongs to, so a spinner drawn while you view a subagent's transcript shows the main conversation's round.
 - **The summary line's label.** Claude Code labels the line with the names of every mod that hooks the end of a turn, such as `cockpit+cc-plugin-agents-md:`.
 
 ## If your organization manages Claude Code
