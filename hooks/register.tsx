@@ -1,6 +1,9 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
+import { appendAudit, auditLine } from './lib/audit'
+import type { AuditEntry } from './lib/audit'
+import { stubClassifier } from './lib/classifier'
 import { readConfig } from './lib/config'
 import { diffSnapshots, snapshot } from './lib/git'
 import type { GitRun } from './lib/git'
@@ -16,6 +19,22 @@ import {
   oneLine,
   PROMPT_KEPT,
 } from './lib/timeline'
+import {
+  allowedBy,
+  argsOf,
+  checkCall,
+  combineRules,
+  defaultWritableRoots,
+  FILE_TOOLS,
+  isInside,
+  NO_RULES,
+  normalizePath,
+  outsideProjectVerdict,
+  parseRules,
+  resolvePath,
+  subjectOf,
+} from './lib/rules'
+import type { GuardRules, RulesFile, Verdict } from './lib/rules'
 import { isOlder, MIN_CLAUDE_CODE } from './lib/version'
 import { editsBandTree } from './ui/edits'
 import { timelineTree } from './ui/timeline'
@@ -26,6 +45,9 @@ export const turnLines = atom({ plugin: 'cockpit', key: 'turnLines' } as const, 
 export const timeline = atom({ plugin: 'cockpit', key: 'timeline' } as const, { compacted: [], rows: [] })
 const tick = atom({ plugin: 'cockpit', key: 'tick' } as const, 0)
 const inventory = atom({ plugin: 'cockpit', key: 'inventory' } as const, null)
+const autoBlocks = atom({ plugin: 'cockpit', key: 'autoBlocks' } as const, {})
+const approvals = atom({ plugin: 'cockpit', key: 'approvals' } as const, [])
+const addedDirs = atom({ plugin: 'cockpit', key: 'addedDirs' } as const, [])
 export const lastEdits = atom({ plugin: 'cockpit', key: 'lastEdits' } as const, null)
 export const editsExpanded = atom({ plugin: 'cockpit', key: 'editsExpanded' } as const, false)
 export const editsDismissed = atom({ plugin: 'cockpit', key: 'editsDismissed' } as const, false)
@@ -76,6 +98,133 @@ async function refreshInventory($: EngineInterface): Promise<void> {
   }
 }
 
+/** The guard's rules and the directories writes may go to, read once per load. */
+type GuardContext = { rules: GuardRules; home: string | undefined; writable: string[]; problems: string[] }
+
+/** How long an approval after an auto-mode block stays good for its one retry. */
+const APPROVAL_MS = 5 * 60_000
+
+/** The labels of the question asked when auto mode blocks a call. */
+const RUN_ONCE = 'Run it once'
+const KEEP_BLOCKED = 'Keep it blocked'
+
+/** How much of a call's arguments the question shows. */
+const ASK_ARGS_SHOWN = 4000
+
+let guardContext: Promise<GuardContext> | null = null
+
+/**
+ * Reads the rules files: the user's own (any rule) and the project's
+ * `.claude/cockpit-rules.json` (deny rules only), plus the directories the
+ * file tools may write to: the temp directories, Claude Code's plans and
+ * memory, the settings' additionalDirectories and the rules file's own.
+ */
+async function loadGuard($: EngineInterface, rulesFile: string, disabledByConfig: readonly string[]): Promise<GuardContext> {
+  const problems: string[] = []
+  let home: string | undefined
+  let tmp: (string | undefined)[] = []
+  try {
+    home = (await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE'))
+    tmp = [await $.env.get('TMPDIR'), await $.env.get('TEMP'), await $.env.get('TMP')]
+  } catch {
+    // No environment to read: the defaults below go without them.
+  }
+  if (home !== undefined) home = normalizePath(home, undefined)
+  const files: RulesFile[] = []
+  const readFile = async (path: string, isUserFile: boolean) => {
+    let text: string
+    try {
+      if (!(await $.fs.exists(path))) return
+      text = await $.fs.read(path)
+    } catch {
+      return
+    }
+    const parsed = parseRules(text, isUserFile)
+    if (parsed.problem) problems.push(`${path}: ${parsed.problem}; its rules are ignored`)
+    else files.push(parsed.rules)
+  }
+  if (rulesFile.trim() !== '') await readFile(normalizePath(rulesFile.trim(), home), true)
+  try {
+    await readFile((await $.session.root()) + '/.claude/cockpit-rules.json', false)
+  } catch {
+    // No project root: no project rules.
+  }
+  const rules = combineRules(files, disabledByConfig)
+  let fromSettings: string[] = []
+  try {
+    const settings = (await $.settings.read()) as { permissions?: { additionalDirectories?: unknown } }
+    const dirs = settings.permissions?.additionalDirectories
+    if (Array.isArray(dirs)) fromSettings = dirs.filter((dir): dir is string => typeof dir === 'string')
+  } catch {
+    // No settings to read.
+  }
+  const writable = [
+    ...defaultWritableRoots(home, tmp),
+    ...[...rules.writableRoots, ...fromSettings].map(dir => normalizePath(dir, home)),
+  ]
+  return { rules, home, writable, problems }
+}
+
+/** The guard's context, loaded at session start or on the first call that needs it. */
+function guardOf($: EngineInterface, rulesFile: string, disabledByConfig: readonly string[]): Promise<GuardContext> {
+  guardContext ??= loadGuard($, rulesFile, disabledByConfig)
+  return guardContext
+}
+
+/** The real path of `path`, links resolved; for a file not yet written, its directory's real path joined with its name. */
+async function realPathOf($: EngineInterface, path: string): Promise<string> {
+  try {
+    return normalizePath((await $.fs.stat(path, { resolve: true })).realPath ?? path, undefined)
+  } catch {
+    const slash = path.lastIndexOf('/')
+    if (slash <= 0) return path
+    try {
+      const dir = (await $.fs.stat(path.slice(0, slash), { resolve: true })).realPath
+      return dir ? normalizePath(dir, undefined) + path.slice(slash) : path
+    } catch {
+      return path
+    }
+  }
+}
+
+/** The write-outside-project verdict for a file tool's call, or null when its path is inside a writable root. */
+async function writeVerdict($: EngineInterface, tool: string, args: Record<string, unknown>, context: GuardContext): Promise<Verdict | null> {
+  if (context.rules.disabled.has('write-outside-project')) return null
+  const field = FILE_TOOLS[tool]
+  const raw = field === undefined ? undefined : args[field]
+  if (typeof raw !== 'string' || raw === '') return null
+  const root = await realPathOf($, normalizePath(await $.session.root(), context.home))
+  const target = await realPathOf($, resolvePath(root, normalizePath(raw, context.home)))
+  const added = (await read($, addedDirs)).map(dir => normalizePath(dir, context.home))
+  const roots = [root, ...context.writable, ...added]
+  return roots.some(dir => isInside(target, dir)) ? null : outsideProjectVerdict(raw, root)
+}
+
+/** Logs one decision in the transcript and appends it to the audit trail in $.store. */
+async function recordDecision($: EngineInterface, entry: Omit<AuditEntry, 'at' | 'session'>): Promise<void> {
+  let session = ''
+  let at = 0
+  try {
+    session = await $.session.id()
+    at = await $.clock.now()
+  } catch {
+    // Stamped as unknown.
+  }
+  const full: AuditEntry = { ...entry, subject: entry.subject.slice(0, 300), at, session }
+  $.ui.log(auditLine(full))
+  try {
+    const trail = await $.store.get('audit')
+    await $.store.set('audit', appendAudit(trail, full))
+  } catch {
+    // The transcript line stands; the trail misses this one.
+  }
+}
+
+/** True for a tool call's result that says it didn't run: refused, or answered as an error. */
+function isRefused(result: { deny?: string; isError?: true }): boolean {
+  return typeof result.deny === 'string' || result.isError === true
+}
+
 /** git through `$.process.run`, taking no optional lock so it never blocks the person's own git. */
 function gitOf($: EngineInterface): GitRun {
   return (args, options) =>
@@ -92,6 +241,10 @@ export const register: Register = (on, options) => {
   const tracksTurns = config.roundTrace || config.timeline || config.editedFiles
 
   on('session.start', async ($, e, next) => {
+    if (config.gate) {
+      guardContext = null
+      for (const problem of (await guardOf($, config.gateRulesFile, config.gateDisabledRules)).problems) $.ui.log('cockpit rules file ' + problem)
+    }
     try {
       const { version, base } = await $.session.version()
       if (isOlder(base ?? version)) {
@@ -304,6 +457,129 @@ export const register: Register = (on, options) => {
         },
         theirs,
       )
+    })
+  }
+
+  if (config.gate) {
+    // The deterministic layer, then the classifier seam, then the call; and
+    // when auto mode blocked it, the one question this guard ever asks.
+    on('tool.call', async ($, e, next) => {
+      const guard = await guardOf($, config.gateRulesFile, config.gateDisabledRules)
+      const args = argsOf(e)
+      const subject = subjectOf(e.tool, args)
+      const verdict = checkCall(e.tool, args, guard.rules) ?? (await writeVerdict($, e.tool, args, guard))
+      if (verdict !== null) {
+        await recordDecision($, { tool: e.tool, decision: 'deny', rule: verdict.rule, subject, reason: verdict.reason })
+        return { deny: 'cockpit blocked this call: ' + verdict.reason }
+      }
+      const running = await read($, live)
+      const opinion = await stubClassifier({ tool: e.tool, input: args, lastPrompt: running?.prompt ?? '' })
+      if (opinion.decision === 'deny') {
+        const reason = opinion.reason ?? 'the classifier refused it'
+        await recordDecision($, { tool: e.tool, decision: 'deny', rule: 'classifier', subject, reason })
+        return { deny: 'cockpit blocked this call: ' + reason + '. Find another way, or ask the user.' }
+      }
+
+      const result = await next(e)
+      if (!config.gateAutoModePrompt || !isRefused(result) || e.tool_use_id === undefined) return result
+      // The block auto mode noted for this call: by its id, or else by its tool and subject.
+      const blocks = await read($, autoBlocks)
+      const found =
+        Object.entries(blocks).find(([key]) => key === e.tool_use_id) ??
+        Object.entries(blocks)
+          .reverse()
+          .find(([, b]) => b.tool === e.tool && b.subject === subject)
+      if (found === undefined) return result
+      const [blockKey, block] = found
+      const id = e.tool_use_id
+      await update($, autoBlocks, all => Object.fromEntries(Object.entries(all).filter(([key]) => key !== blockKey)))
+
+      const shown = JSON.stringify(args, null, 2)
+      const question =
+        `Auto mode blocked a ${e.tool} call` +
+        (e.agentId === undefined ? '' : ` from a subagent (${e.agentId})`) +
+        `.\nReason: ${block.reason}\n\n${e.tool} arguments:\n` +
+        (shown.length > ASK_ARGS_SHOWN ? shown.slice(0, ASK_ARGS_SHOWN) + `\n… (${shown.length - ASK_ARGS_SHOWN} more characters)` : shown) +
+        '\n\nRun it once anyway?'
+      let answer = KEEP_BLOCKED
+      try {
+        // The wait is inside $.ui.ask, so it costs this hook none of its time.
+        answer = await $.ui.ask(question, { options: [RUN_ONCE, KEEP_BLOCKED], header: 'Auto mode' })
+      } catch {
+        // Dismissed, "Chat about this", or nobody to ask (claude -p): it stays blocked.
+      }
+      if (answer !== RUN_ONCE) {
+        await recordDecision($, { tool: e.tool, decision: 'kept-auto-block', rule: 'auto-mode', subject, reason: block.reason })
+        return result
+      }
+      const now = await $.clock.now()
+      await update($, approvals, list => [...list.filter(a => now - a.at < APPROVAL_MS), { toolUseId: id, tool: e.tool, subject, at: now }])
+      await recordDecision($, { tool: e.tool, decision: 'approved-after-auto-block', rule: 'auto-mode', subject, reason: block.reason })
+      // Run it again: this time cockpit's tool.check answers allow, so the classifier isn't asked.
+      // The approval lasts exactly this one run.
+      try {
+        return await next(e)
+      } finally {
+        await update($, approvals, list => list.filter(a => a.toolUseId !== id))
+      }
+    }).catch(($, e, next) => {
+      if (next.error.kind === 're-entry') {
+        // Asked beneath this hook's own call: judge from the event alone, no $ call,
+        // with every built-in rule on (the rules file can't be read here).
+        const verdict = checkCall(e.tool, argsOf(e), NO_RULES)
+        return verdict === null ? next(e) : { deny: 'cockpit blocked this call: ' + verdict.reason }
+      }
+      if (next.called) return next(e)
+      try {
+        $.ui.log(`guard failed (${next.error.kind}) on ${e.tool}; the call was not run`)
+      } catch {
+        // The deny below stands without the line.
+      }
+      return {
+        deny:
+          `cockpit's tool guard failed (${next.error.kind}) while checking this call, so it was not run. ` +
+          'Try the call again; if this keeps happening, tell the user the cockpit guard is failing.',
+      }
+    })
+
+    // Runs after the rules, the mode and the settings hooks have decided: let
+    // through one call the user approved after an auto-mode block, and calls
+    // an allow rule in the user's own rules file names. Never loosens a deny.
+    on('tool.check', async ($, e, next) => {
+      const decided = await next(e)
+      if (decided.decision === 'deny') return decided
+      const input = (e.input !== null && typeof e.input === 'object' ? e.input : {}) as Record<string, unknown>
+      const subject = subjectOf(e.tool, input)
+      const now = await $.clock.now()
+      const approved = (await read($, approvals)).find(
+        a => now - a.at < APPROVAL_MS && (a.toolUseId === e.tool_use_id || (a.tool === e.tool && a.subject === subject)),
+      )
+      if (approved !== undefined) {
+        // The guard removes the approval once its one re-run is done.
+        return { decision: 'allow', reason: 'the user approved this call after auto mode blocked it' }
+      }
+      if (decided.decision !== 'ask') return decided
+      const rule = allowedBy(e.tool, input, (await guardOf($, config.gateRulesFile, config.gateDisabledRules)).rules)
+      if (rule === undefined) return decided
+      if (e.tool_use_id !== undefined) await recordDecision($, { tool: e.tool, decision: 'allow', rule: rule.id, subject })
+      return { decision: 'allow', reason: `allowed by the rule ${rule.id} in the cockpit rules file` }
+    })
+
+    if (config.gateAutoModePrompt) {
+      // Fires when the auto mode classifier denies a call, before the call's
+      // tool.call chain hears it was refused: note it for the guard above.
+      on('classic.PermissionDenied', async ($, e, next) => {
+        const input = (e.tool_input !== null && typeof e.tool_input === 'object' ? e.tool_input : {}) as Record<string, unknown>
+        const block = { tool: e.tool_name, reason: e.reason, subject: subjectOf(e.tool_name, input) }
+        await update($, autoBlocks, blocks => Object.fromEntries([...Object.entries(blocks).slice(-19), [e.tool_use_id, block]]))
+        return next(e)
+      })
+    }
+
+    // A directory added mid-session with /add-dir is writable too.
+    on('classic.DirectoryAdded', async ($, e, next) => {
+      await update($, addedDirs, dirs => (dirs.includes(e.directory) ? dirs : [...dirs, e.directory]))
+      return next(e)
     })
   }
 }

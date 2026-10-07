@@ -111,6 +111,22 @@ export type CockpitTimeline = {
   rows: readonly CockpitTurnRow[]
 }
 
+/** A tool call auto mode blocked, kept until the guard's `tool.call` hook sees the call come back refused. */
+export type CockpitAutoBlock = {
+  tool: string
+  reason: string
+  /** The command, path or arguments, as the guard's rules read them. */
+  subject: string
+}
+
+/** A call the user approved after auto mode blocked it: `tool.check` lets it through once. */
+export type CockpitApproval = {
+  toolUseId: string
+  tool: string
+  subject: string
+  at: number
+}
+
 declare module 'claude-code' {
   interface PluginState {
     cockpit: {
@@ -119,6 +135,9 @@ declare module 'claude-code' {
       timeline: CockpitTimeline
       tick: number
       inventory: CockpitInventory | null
+      autoBlocks: Readonly<Record<string, CockpitAutoBlock>>
+      approvals: readonly CockpitApproval[]
+      addedDirs: readonly string[]
       lastEdits: CockpitEdits | null
       editsExpanded: boolean
       editsDismissed: boolean

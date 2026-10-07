@@ -90,8 +90,53 @@ cockpit compares a snapshot of the working tree from the start of the turn with 
 | :- | :- | :- |
 | `editedFiles` | `true` | Takes the snapshots and shows the band. When it's off, git never runs |
 
+### Tool guard
+
+The guard refuses tool calls that are clearly destructive, and stays out of the way otherwise. It never asks about an ordinary call, so Claude Code's own permission prompts are never asked twice. The one question it ever asks comes after auto mode blocks a call.
+
+**Built-in rules.** A refused call never runs, and Claude reads why along with what to do instead.
+
+| Rule id | Refuses |
+| :- | :- |
+| `rm-rf` | A recursive, forced delete: `rm -rf`, `rm -r -f`, `rm --recursive --force`, and PowerShell's `Remove-Item -Recurse -Force` |
+| `git-reset-hard` | `git reset --hard` |
+| `git-push-force` | `git push --force`, `-f`, or a `+` refspec. `--force-with-lease` is left alone |
+| `write-outside-project` | Edit, Write and NotebookEdit calls on a path outside the project, after links are resolved. Temp directories, Claude Code's plans and memory folders, `permissions.additionalDirectories` from settings, directories added with `/add-dir`, and your rules file's `writableRoots` are allowed |
+
+The guard reads a command one simple command at a time, so text that only mentions `rm -rf`, such as in an `echo` or a commit message, doesn't match.
+
+**When auto mode blocks a call**, cockpit shows the tool, the classifier's reason and the call's full arguments, and asks whether to **Run it once**. If you agree, the same call runs right away with the classifier skipped for that one run. Anything else keeps it blocked: **Keep it blocked**, a typed answer, dismissing the question, **Chat about this**, or a `claude -p` run with nobody to ask.
+
+**Your own rules** go in `~/.claude/cockpit-rules.json`, or the path in `gateRulesFile`:
+
+```json
+{
+  "disable": ["git-push-force"],
+  "deny": [{ "id": "no-publish", "tool": "Bash", "pattern": "\\bnpm\\s+publish\\b", "reason": "publishing is done by CI" }],
+  "allow": [{ "id": "tests", "tool": "Bash", "pattern": "^npm test$" }],
+  "writableRoots": ["~/notes"]
+}
+```
+
+`pattern` is a regular expression over the command for Bash and PowerShell, the path for the file tools, the URL for WebFetch, and the arguments as JSON for any other tool. `tool` can be `*`. An `allow` rule only approves a call that would otherwise prompt. It never overrides a deny rule or a decision to refuse. A project's `.claude/cockpit-rules.json` can only add `deny` rules: a repository can't approve calls for itself or turn protections off.
+
+**Every decision** leaves a line in the transcript, such as `cockpit: denied Bash (rm-rf): rm -rf build`, and goes into an audit trail in cockpit's store (`~/.claude/plugins/store/`). The trail keeps the newest 500 entries.
+
+**Failing closed.** If the guard throws or runs out of time while checking a call, the call is refused, and Claude is told why.
+
+**Classifier seam.** `hooks/lib/classifier.ts` defines a classifier interface. Its input is the tool's name, its arguments and the user's last prompt, never the transcript. The stub shipped with cockpit always answers `ask`, meaning "no opinion".
+
+| Option | Default | What it does |
+| :- | :- | :- |
+| `gate` | `true` | Turns the guard on or off |
+| `gateAutoModePrompt` | `true` | Asks whether to run a call once after auto mode blocks it |
+| `gateRulesFile` | `~/.claude/cockpit-rules.json` | Your rules file |
+| `gateDisabledRules` | `[]` | Built-in rules to turn off, by id. A list, so it's set in `settings.json` under `pluginConfigs` rather than in `/config` |
+
 ## Known limitations
 
+- **The guard reads command text.** It's a safety net for honest mistakes, not a sandbox: a command spelled another way, such as through a script, `eval`, or a quoted program name, gets past it. The write rule covers the file tools only, so a Bash redirect to a path outside the project isn't checked. Directories given with `--add-dir` at startup aren't visible to a mod, so list them in `writableRoots`.
+- **Deny rules and managed hooks come first.** Where Claude Code's built-in guard loads (machines with managed settings, or Team and Enterprise sign-ins), a `deny` permission rule holds over cockpit, so "Run it once" can't approve a call that a deny rule refuses. A blocking `PreToolUse` hook in managed settings is final too.
 - **Edited files are counted by git.** Edits you make by hand while a turn runs count as that turn's. A rename shows as one file removed and one added. Past 500 untracked files, untracked files aren't counted. Past 50 changed untracked files, the rest are listed without line counts. Taking the snapshots runs a few git commands at the start and end of each turn, which takes longer in a very large repository.
 - **Round boundaries come from the model's response.** cockpit counts the `tool_use` blocks of each response. Tool calls that the API runs on its own side, such as the advisor, don't count.
 - **Desktop app.** The tests check the tree cockpit gives the Desktop app's spinner, but only a real session shows how the app draws the added text. In the Desktop app, the spinner's word describes the current step instead of the animated verb.

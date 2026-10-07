@@ -8,6 +8,10 @@ export type CockpitConfig = {
   roundTraceMaxTools: number
   timeline: boolean
   editedFiles: boolean
+  gate: boolean
+  gateAutoModePrompt: boolean
+  gateRulesFile: string
+  gateDisabledRules: readonly string[]
 }
 
 function flag(value: unknown, fallback: boolean): boolean {
@@ -25,5 +29,11 @@ export function readConfig(options: PluginOptions): CockpitConfig {
     roundTraceMaxTools: number(options.roundTraceMaxTools, 5, 1, 20),
     timeline: flag(options.timeline, true),
     editedFiles: flag(options.editedFiles, true),
+    gate: flag(options.gate, true),
+    gateAutoModePrompt: flag(options.gateAutoModePrompt, true),
+    gateRulesFile: typeof options.gateRulesFile === 'string' ? options.gateRulesFile : '~/.claude/cockpit-rules.json',
+    gateDisabledRules: Array.isArray(options.gateDisabledRules)
+      ? options.gateDisabledRules.filter((rule): rule is string => typeof rule === 'string')
+      : [],
   }
 }

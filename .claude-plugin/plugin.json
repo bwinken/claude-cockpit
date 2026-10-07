@@ -1,7 +1,7 @@
 {
   "name": "cockpit",
   "version": "0.1.0",
-  "description": "Makes a Claude Code session's work visible: the running round of tool calls, a per-turn summary, a timeline pane and the files each turn edited.",
+  "description": "Makes a Claude Code session's work visible: the running round of tool calls, a per-turn summary, a session timeline, the files each turn edited, and a guard for destructive tool calls.",
   "author": {
     "name": "bwinken"
   },
@@ -44,6 +44,31 @@
       "title": "Edited files band",
       "description": "After each turn in a git repository, show above the prompt which files the turn changed and by how many lines. Outside a git repository nothing is shown.",
       "default": true
+    },
+    "gate": {
+      "type": "boolean",
+      "title": "Tool guard",
+      "description": "Refuse clearly destructive tool calls (rm -rf, git reset --hard, force push, file writes outside the project), plus any deny rules in your rules file. Every decision is logged and kept in an audit trail.",
+      "default": true
+    },
+    "gateAutoModePrompt": {
+      "type": "boolean",
+      "title": "Ask when auto mode blocks a call",
+      "description": "When the auto mode classifier blocks a tool call, ask whether to run it once anyway. Only in auto mode; Claude Code's own permission prompts are never asked twice.",
+      "default": true
+    },
+    "gateRulesFile": {
+      "type": "string",
+      "title": "Guard rules file",
+      "description": "Your rules file: deny and allow rules, built-in rules to turn off, extra writable directories. A project's .claude/cockpit-rules.json can only add deny rules.",
+      "default": "~/.claude/cockpit-rules.json"
+    },
+    "gateDisabledRules": {
+      "type": "string",
+      "multiple": true,
+      "title": "Built-in guard rules to turn off",
+      "description": "Any of rm-rf, git-reset-hard, git-push-force, write-outside-project.",
+      "default": []
     }
   }
 }

@@ -63,3 +63,22 @@ module that breaks these:
   after. cockpit runs every git command with `GIT_OPTIONAL_LOCKS=0`, which
   tells git to skip the locks it takes only for optional work. Whether that
   keeps `stash create` from ever taking the index lock hasn't been verified.
+
+## Phase 3 findings
+
+- In a real session (2.1.292, auto mode), `classic.PermissionDenied` fires
+  while the call's `tool.call` chain is still waiting on `next(e)`, so a
+  `tool.call` hook can see that auto mode blocked the call it's running and
+  call `next(e)` again. On that second run, cockpit's `tool.check` answers
+  `allow` and the call runs without the classifier.
+- In the test kit, an event that a stub raises *beneath* the plugin's own
+  `tool.call` hook (calling the test's `$.classic.PermissionDenied` from
+  inside a `tool.call` stub) reaches the plugin's other hooks, but their
+  `$.state` writes don't show up in what the outer hook reads afterwards. A
+  write and a read-back inside the nested hook agree, and the outer hook sees
+  version 0. The tests raise `PermissionDenied` from the test body before the
+  call instead, and the guard matches a block by its `tool_use_id` or by
+  tool and command.
+- `$` may only be passed to a function declared at the top level of the same
+  file. A closure inside `register` counts as "not a function declared at
+  the top of this file".

@@ -90,8 +90,53 @@ cockpit 比對 turn 開始與結束時的工作目錄快照，所以用 Bash 指
 | :- | :- | :- |
 | `editedFiles` | `true` | 取快照並顯示 band。關閉時完全不執行 git |
 
+### Tool guard
+
+guard 只拒絕明顯具破壞性的 tool call，其餘情況一律不介入。它不會為一般的呼叫跳出詢問，所以不會在 Claude Code 原生權限提示之外重複詢問。它唯一會問的問題，是在 auto mode 擋下某個呼叫之後。
+
+**內建規則。** 被拒絕的呼叫不會執行，Claude 會讀到拒絕的原因和替代做法。
+
+| 規則 id | 拒絕 |
+| :- | :- |
+| `rm-rf` | 遞迴且強制的刪除：`rm -rf`、`rm -r -f`、`rm --recursive --force`，以及 PowerShell 的 `Remove-Item -Recurse -Force` |
+| `git-reset-hard` | `git reset --hard` |
+| `git-push-force` | `git push --force`、`-f`，或 `+` refspec。`--force-with-lease` 不受影響 |
+| `write-outside-project` | Edit、Write、NotebookEdit 寫入專案以外的路徑（解析連結之後）。暫存目錄、Claude Code 的 plans 與 memory 資料夾、settings 的 `permissions.additionalDirectories`、用 `/add-dir` 加入的目錄，以及規則檔的 `writableRoots` 都允許 |
+
+guard 會把指令拆成一個個簡單指令來判讀，所以只是提到 `rm -rf` 的文字（例如在 `echo` 或 commit 訊息裡）不會被擋。
+
+**auto mode 擋下呼叫時**，cockpit 會顯示工具名稱、classifier 的理由和完整參數，並詢問是否要 **Run it once**。同意的話，同一個呼叫會立刻再執行一次，這一次略過 classifier。其他任何回應都維持擋下：**Keep it blocked**、自行輸入的答案、關閉問題、**Chat about this**，或沒有人可以回答的 `claude -p`。
+
+**自訂規則**放在 `~/.claude/cockpit-rules.json`（或 `gateRulesFile` 指定的路徑）：
+
+```json
+{
+  "disable": ["git-push-force"],
+  "deny": [{ "id": "no-publish", "tool": "Bash", "pattern": "\\bnpm\\s+publish\\b", "reason": "publishing is done by CI" }],
+  "allow": [{ "id": "tests", "tool": "Bash", "pattern": "^npm test$" }],
+  "writableRoots": ["~/notes"]
+}
+```
+
+`pattern` 是正規表示式，比對的對象依工具而定：Bash 和 PowerShell 比對指令，檔案工具比對路徑，WebFetch 比對 URL，其他工具比對參數的 JSON。`tool` 可以填 `*`。`allow` 規則只會核准原本會跳出提示的呼叫，不會推翻 deny 規則或拒絕的決定。專案的 `.claude/cockpit-rules.json` 只能新增 `deny` 規則：repo 不能替自己核准呼叫，也不能關閉保護。
+
+**每一次決定**都會在 transcript 留下一行，例如 `cockpit: denied Bash (rm-rf): rm -rf build`，並寫入 cockpit store（`~/.claude/plugins/store/`）的稽核紀錄。稽核紀錄保留最新的 500 筆。
+
+**fail-closed。** guard 在檢查呼叫時拋出錯誤或逾時，該呼叫會被拒絕，並告訴 Claude 原因。
+
+**classifier 介面。** `hooks/lib/classifier.ts` 定義了 classifier 介面，輸入只有工具名稱、參數和使用者最後一則 prompt，不會傳入 transcript。cockpit 內附的 stub 一律回答 `ask`，表示「沒有意見」。
+
+| 選項 | 預設 | 作用 |
+| :- | :- | :- |
+| `gate` | `true` | 開關 guard |
+| `gateAutoModePrompt` | `true` | auto mode 擋下呼叫後，詢問是否執行一次 |
+| `gateRulesFile` | `~/.claude/cockpit-rules.json` | 你的規則檔 |
+| `gateDisabledRules` | `[]` | 依 id 關閉內建規則。這是清單，所以要在 `settings.json` 的 `pluginConfigs` 底下設定，`/config` 不會顯示 |
+
 ## 已知限制
 
+- **guard 判讀的是指令文字。** 它是防止無心之失的安全網，不是沙箱：換個寫法的指令（透過 script、`eval`、加引號的程式名稱）都能繞過。寫入規則只涵蓋檔案工具，所以 Bash 重新導向到專案外的路徑不會被檢查。啟動時用 `--add-dir` 加入的目錄 mod 看不到，請把它們列在 `writableRoots`。
+- **deny 規則和 managed hook 優先。** 在載入 Claude Code 內建 guard 的環境（有 managed settings 的機器，或以 Team、Enterprise 登入），`deny` 權限規則的效力高於 cockpit，所以「Run it once」無法核准被 deny 規則拒絕的呼叫。managed settings 裡會阻擋的 `PreToolUse` hook 同樣是最終決定。
 - **編輯的檔案由 git 計算。** turn 進行中你手動做的修改，也會算在那一輪。改名會顯示成刪除一個檔案、新增一個檔案。未追蹤的檔案超過 500 個時不列入計算。有變動的未追蹤檔案超過 50 個時，其餘的只列檔名、沒有行數。每一輪的開始和結束各要執行幾個 git 指令，在非常大的 repo 中會比較久。
 - **round 的邊界取決於 model 的回應。** cockpit 計算每次回應裡的 `tool_use` block。由 API 端自己執行的工具（例如 advisor）不列入計算。
 - **Desktop app。** 測試只確認 cockpit 交給 Desktop spinner 的樹，app 實際怎麼畫出這段文字，要在真實 session 中才看得到。在 Desktop app 中，spinner 的字詞描述的是目前的步驟，而不是動畫用的動詞。
