@@ -111,7 +111,7 @@ The guard refuses tool calls that are clearly destructive, and stays out of the 
 | `rm-rf` | A recursive, forced delete: `rm -rf`, `rm -r -f`, `rm --recursive --force`, and PowerShell's `Remove-Item -Recurse -Force` |
 | `git-reset-hard` | `git reset --hard` |
 | `git-push-force` | `git push --force`, `-f`, or a `+` refspec. `--force-with-lease` is left alone |
-| `write-outside-project` | Edit, Write and NotebookEdit calls on a path outside the project, after links are resolved. Temp directories, Claude Code's plans and memory folders, `permissions.additionalDirectories` from settings, directories added with `/add-dir`, and your rules file's `writableRoots` are allowed |
+| `write-outside-project` | Edit, Write and NotebookEdit calls on a path outside the project, after links are resolved. Temp directories, Claude Code's own directory (`~/.claude`, or `CLAUDE_CONFIG_DIR`, where global CLAUDE.md, skills, agents, plans and memory live; Claude Code still prompts there itself), `permissions.additionalDirectories` from settings, directories added with `/add-dir`, and your rules file's `writableRoots` are allowed |
 
 The guard reads a command one simple command at a time, so text that only mentions `rm -rf`, such as in an `echo` or a commit message, doesn't match.
 
@@ -147,7 +147,7 @@ The guard reads a command one simple command at a time, so text that only mentio
 
 - **The guard reads command text.** It's a safety net for honest mistakes, not a sandbox: a command spelled another way, such as through a script, `eval`, or a quoted program name, gets past it. The write rule covers the file tools only, so a Bash redirect to a path outside the project isn't checked. Directories given with `--add-dir` at startup aren't visible to a mod, so list them in `writableRoots`.
 - **Deny rules and managed hooks come first.** Where Claude Code's built-in guard loads (machines with managed settings, or Team and Enterprise sign-ins), a `deny` permission rule holds over cockpit, so "Run it once" can't approve a call that a deny rule refuses. A blocking `PreToolUse` hook in managed settings is final too.
-- **Edited files are counted by git.** Edits you make by hand while a turn runs count as that turn's. A rename shows as one file removed and one added. Past 500 untracked files, untracked files aren't counted. Past 50 changed untracked files, the rest are listed without line counts. Taking the snapshots runs a few git commands at the start and end of each turn, which takes longer in a very large repository.
+- **Edited files are counted by git.** Edits you make by hand while a turn runs count as that turn's. A rename shows as one file removed and one added. Past 500 untracked files, untracked files aren't counted. Past 50 changed untracked files, the rest are listed without line counts. An untracked file over 2 MiB isn't hashed into `.git`: cockpit compares its size and modification time, and a change shows as `large file` with no line counts. Taking the snapshots runs a few git commands at the start and end of each turn, which takes longer in a very large repository.
 - **Round boundaries come from the model's response.** cockpit counts the `tool_use` blocks of each response. Tool calls that the API runs on its own side, such as the advisor, don't count.
 - **Desktop app.** The tests check the tree cockpit gives the Desktop app's spinner, but only a real session shows how the app draws the added text. In the Desktop app, the spinner's word describes the current step instead of the animated verb.
 - **Subagent views.** The spinner doesn't say whose loop it belongs to, so a spinner drawn while you view a subagent's transcript shows the main conversation's round.
@@ -176,7 +176,18 @@ claude plugin test .                # tests/*.test.ts against the engine
 tsc -p .                            # after Claude Code has loaded the folder once (writes .claude-plugin/types/)
 ```
 
+CI (`.github/workflows/ci.yml`) runs the first two on Linux, macOS and Windows. Type checking needs the declarations that Claude Code writes when it loads the folder, which happens only in a real session, so `tsc` runs locally.
+
 `NOTES.md` records the places where the mods documentation and the declarations of this build of Claude Code disagree.
+
+## Releasing
+
+Installed copies stay on the `version` in `.claude-plugin/plugin.json` until that value changes. A change to the mod that doesn't bump the version never reaches people who already installed it. For each release:
+
+1. Bump `version` in `.claude-plugin/plugin.json` (for example `0.1.0` → `0.1.1`).
+2. Push. Users pick it up with `claude plugin update cockpit@claude-cockpit`, then `/reload-plugins` in a running session.
+
+CI fails a pull request that changes `hooks/`, `types/` or `plugin.json` without changing the version.
 
 ## License
 

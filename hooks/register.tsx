@@ -6,7 +6,7 @@ import type { AuditEntry } from './lib/audit'
 import { stubClassifier } from './lib/classifier'
 import { readConfig } from './lib/config'
 import { diffSnapshots, snapshot } from './lib/git'
-import type { GitRun } from './lib/git'
+import type { GitRun, StatFile } from './lib/git'
 import { beginStep, endStep, skillsOf, spinnerText, startTurn, summarize, withStreaming } from './lib/rounds'
 import {
   addRow,
@@ -101,6 +101,9 @@ async function refreshInventory($: EngineInterface): Promise<void> {
 /** The guard's rules and the directories writes may go to, read once per load. */
 type GuardContext = { rules: GuardRules; home: string | undefined; writable: string[]; problems: string[] }
 
+/** How long a noted auto-mode block waits for its call to come back refused. */
+const AUTO_BLOCK_MS = 5 * 60_000
+
 /** How long an approval after an auto-mode block stays good for its one retry. */
 const APPROVAL_MS = 5 * 60_000
 
@@ -123,9 +126,11 @@ async function loadGuard($: EngineInterface, rulesFile: string, disabledByConfig
   const problems: string[] = []
   let home: string | undefined
   let tmp: (string | undefined)[] = []
+  let configDir: string | undefined
   try {
     home = (await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE'))
     tmp = [await $.env.get('TMPDIR'), await $.env.get('TEMP'), await $.env.get('TMP')]
+    configDir = await $.env.get('CLAUDE_CONFIG_DIR')
   } catch {
     // No environment to read: the defaults below go without them.
   }
@@ -159,7 +164,7 @@ async function loadGuard($: EngineInterface, rulesFile: string, disabledByConfig
     // No settings to read.
   }
   const writable = [
-    ...defaultWritableRoots(home, tmp),
+    ...defaultWritableRoots(home, tmp, configDir),
     ...[...rules.writableRoots, ...fromSettings].map(dir => normalizePath(dir, home)),
   ]
   return { rules, home, writable, problems }
@@ -225,6 +230,18 @@ function isRefused(result: { deny?: string; isError?: true }): boolean {
   return typeof result.deny === 'string' || result.isError === true
 }
 
+/** A file's size and time through `$.fs.stat`, for the snapshots' large-file check. */
+function statOf($: EngineInterface): StatFile {
+  return async path => {
+    try {
+      const { size, mtimeMs } = await $.fs.stat(path)
+      return { size, mtimeMs }
+    } catch {
+      return null
+    }
+  }
+}
+
 /** git through `$.process.run`, taking no optional lock so it never blocks the person's own git. */
 function gitOf($: EngineInterface): GitRun {
   return (args, options) =>
@@ -271,7 +288,7 @@ export const register: Register = (on, options) => {
     on('turn.start', async ($, e, next) => {
       await update($, live, () => startTurn(e.turnId, oneLine(e.text, PROMPT_KEPT)))
       if (config.editedFiles) {
-        const git = await snapshot(gitOf($))
+        const git = await snapshot(gitOf($), statOf($))
         await update($, live, turn => (turn !== null && turn.turnId === e.turnId ? { ...turn, git } : turn))
       }
       return next(e)
@@ -335,7 +352,7 @@ export const register: Register = (on, options) => {
       let edits = null
       if (config.editedFiles && turn.git) {
         const run = gitOf($)
-        const now = await snapshot(run)
+        const now = await snapshot(run, statOf($))
         edits = now === null ? null : await diffSnapshots(run, turn.git, now)
         const shown = edits !== null && edits.files.length > 0 ? edits : null
         await update($, lastEdits, () => shown)
@@ -483,16 +500,20 @@ export const register: Register = (on, options) => {
       const result = await next(e)
       if (!config.gateAutoModePrompt || !isRefused(result) || e.tool_use_id === undefined) return result
       // The block auto mode noted for this call: by its id, or else by its tool and subject.
-      const blocks = await read($, autoBlocks)
+      // A block older than AUTO_BLOCK_MS belongs to some other, earlier call: ignored.
+      const checkedAt = await $.clock.now()
+      const blocks = Object.entries(await read($, autoBlocks)).filter(([, b]) => checkedAt - (b.at ?? 0) < AUTO_BLOCK_MS)
       const found =
-        Object.entries(blocks).find(([key]) => key === e.tool_use_id) ??
-        Object.entries(blocks)
+        blocks.find(([key]) => key === e.tool_use_id) ??
+        [...blocks]
           .reverse()
           .find(([, b]) => b.tool === e.tool && b.subject === subject)
       if (found === undefined) return result
       const [blockKey, block] = found
       const id = e.tool_use_id
-      await update($, autoBlocks, all => Object.fromEntries(Object.entries(all).filter(([key]) => key !== blockKey)))
+      await update($, autoBlocks, all =>
+        Object.fromEntries(Object.entries(all).filter(([key, b]) => key !== blockKey && checkedAt - (b.at ?? 0) < AUTO_BLOCK_MS)),
+      )
 
       const shown = JSON.stringify(args, null, 2)
       const question =
@@ -570,7 +591,7 @@ export const register: Register = (on, options) => {
       // tool.call chain hears it was refused: note it for the guard above.
       on('classic.PermissionDenied', async ($, e, next) => {
         const input = (e.tool_input !== null && typeof e.tool_input === 'object' ? e.tool_input : {}) as Record<string, unknown>
-        const block = { tool: e.tool_name, reason: e.reason, subject: subjectOf(e.tool_name, input) }
+        const block = { tool: e.tool_name, reason: e.reason, subject: subjectOf(e.tool_name, input), at: await $.clock.now() }
         await update($, autoBlocks, blocks => Object.fromEntries([...Object.entries(blocks).slice(-19), [e.tool_use_id, block]]))
         return next(e)
       })

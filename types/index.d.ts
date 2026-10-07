@@ -46,11 +46,15 @@ export type CockpitGitSnapshot = {
   untracked: Readonly<Record<string, string>> | null
 }
 
-/** One changed file; `added`/`removed` are null for a binary file. */
+/**
+ * One changed file; `added`/`removed` are null for a binary file, and for a
+ * large untracked file (`large`), whose lines aren't counted.
+ */
 export type CockpitEditedFile = {
   path: string
   added: number | null
   removed: number | null
+  large?: true
 }
 
 /** What a turn changed in the working tree, by git. */
@@ -115,6 +119,8 @@ export type CockpitTimeline = {
 export type CockpitAutoBlock = {
   tool: string
   reason: string
+  /** When auto mode blocked it, in `$.clock.now()` milliseconds. */
+  at: number
   /** The command, path or arguments, as the guard's rules read them. */
   subject: string
 }

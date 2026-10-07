@@ -170,16 +170,29 @@ type On = (name: string, hook: (...args: any[]) => unknown) => void
 function guardStubs(on: On, files: Record<string, string> = {}, realPaths: Record<string, string> = {}, root: unknown = { value: '/work' }) {
   const logs: string[] = []
   const store = new Map<string, unknown>()
-  mock.clock(on as never, { now: 1_000 })
-  on('env.get', ($: unknown, e: { name: string }) => ({ value: ({ HOME: '/home/me', TMPDIR: '/var/tmp/me' } as Record<string, string>)[e.name] }))
+  const clock = mock.clock(on as never, { now: 1_000 })
+  on('env.get', ($: unknown, e: { name: string }) => ({
+    value: ({ HOME: '/home/me', TMPDIR: '/var/tmp/me', CLAUDE_CONFIG_DIR: '/opt/claude-config' } as Record<string, string>)[e.name],
+  }))
   on('session.root', () => root)
   on('session.id', () => ({ value: 'session-1' }))
   on('settings.read', () => ({ value: { permissions: { additionalDirectories: ['/shared'] } } }))
-  on('fs.exists', ($: unknown, e: { path: string }) => ({ value: e.path in files }))
-  on('fs.read', ($: unknown, e: { path: string }) => (e.path in files ? { value: files[e.path] } : { deny: 'no such file' }))
-  on('fs.stat', ($: unknown, e: { path: string }) => ({
-    value: { kind: 'file', size: 1, mtimeMs: 0, isLink: e.path in realPaths, realPath: realPaths[e.path] ?? e.path },
-  }))
+  // The engine hands stubs absolute paths in the test machine's own form (on Windows, `C:\\work\\...`
+  // for `/work/...`), so files are found by the end of their path.
+  const find = (table: Record<string, string>, path: string) => {
+    const p = path.replace(/\\/g, '/')
+    return Object.keys(table).find(key => p === key || p.endsWith(key))
+  }
+  on('fs.exists', ($: unknown, e: { path: string }) => ({ value: find(files, e.path) !== undefined }))
+  on('fs.read', ($: unknown, e: { path: string }) => {
+    const key = find(files, e.path)
+    return key === undefined ? { deny: 'no such file' } : { value: files[key] }
+  })
+  on('fs.stat', ($: unknown, e: { path: string }) => {
+    const link = find(realPaths, e.path)
+    // No realPath for an ordinary file: the guard keeps the path it asked about.
+    return { value: { kind: 'file', size: 1, mtimeMs: 0, isLink: link !== undefined, ...(link === undefined ? {} : { realPath: realPaths[link] }) } }
+  })
   on('ui.log', ($: unknown, e: { text: string }) => {
     logs.push(e.text)
     return { value: undefined }
@@ -189,7 +202,7 @@ function guardStubs(on: On, files: Record<string, string> = {}, realPaths: Recor
     store.set(e.key, e.value)
     return { value: undefined }
   })
-  return { logs, store }
+  return { logs, store, clock }
 }
 
 describe('the guard in a session', () => {
@@ -226,6 +239,11 @@ describe('the guard in a session', () => {
     expect(await write('/tmp/scratch.txt')).toMatchObject({ result: 'written' })
     expect(await write('/var/tmp/me/notes.txt')).toMatchObject({ result: 'written' })
     expect(await write('/home/me/.claude/plans/plan.md')).toMatchObject({ result: 'written' })
+    // Claude Code's own directory: global CLAUDE.md, skills, agents (it still prompts there itself).
+    expect(await write('/home/me/.claude/CLAUDE.md')).toMatchObject({ result: 'written' })
+    expect(await write('/home/me/.claude/skills/release/SKILL.md')).toMatchObject({ result: 'written' })
+    expect(await write('/opt/claude-config/agents/reviewer.md')).toMatchObject({ result: 'written' })
+    expect(JSON.stringify(await write('/home/me/.bashrc'))).toMatch(/outside the project/)
     // From settings' permissions.additionalDirectories.
     expect(await write('/shared/doc.md')).toMatchObject({ result: 'written' })
     expect(JSON.stringify(await write('/etc/hosts'))).toMatch(/outside the project/)
@@ -395,6 +413,16 @@ describe('when auto mode blocks a call', () => {
     await $.classic.PermissionDenied(denied(CURL))
     await $.tool.call({ tool: 'Bash', command: CURL })
     expect(auto.runs()).toBe(1)
+  })
+
+  test('a block noted more than five minutes earlier is ignored', async ($, on) => {
+    const { clock } = guardStubs(on as On)
+    const auto = autoMode($, on, 'Run it once')
+    await $.classic.PermissionDenied(denied(CURL))
+    await clock.advance(6 * 60_000)
+    const out = await $.tool.call({ tool: 'Bash', command: CURL })
+    expect(JSON.stringify(out)).toMatch(/Auto mode blocked this/)
+    expect(auto.questions).toEqual([])
   })
 
   test('a refusal that auto mode did not make asks nothing', async ($, on) => {

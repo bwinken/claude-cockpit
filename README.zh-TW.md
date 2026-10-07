@@ -111,7 +111,7 @@ guard 只拒絕明顯具破壞性的 tool call，其餘情況一律不介入。�
 | `rm-rf` | 遞迴且強制的刪除：`rm -rf`、`rm -r -f`、`rm --recursive --force`，以及 PowerShell 的 `Remove-Item -Recurse -Force` |
 | `git-reset-hard` | `git reset --hard` |
 | `git-push-force` | `git push --force`、`-f`，或 `+` refspec。`--force-with-lease` 不受影響 |
-| `write-outside-project` | Edit、Write、NotebookEdit 寫入專案以外的路徑（解析連結之後）。暫存目錄、Claude Code 的 plans 與 memory 資料夾、settings 的 `permissions.additionalDirectories`、用 `/add-dir` 加入的目錄，以及規則檔的 `writableRoots` 都允許 |
+| `write-outside-project` | Edit、Write、NotebookEdit 寫入專案以外的路徑（解析連結之後）。暫存目錄、Claude Code 自己的目錄（`~/.claude` 或 `CLAUDE_CONFIG_DIR`，存放全域 CLAUDE.md、skills、agents、plans 與 memory；Claude Code 對這裡仍會自行跳出提示）、settings 的 `permissions.additionalDirectories`、用 `/add-dir` 加入的目錄，以及規則檔的 `writableRoots` 都允許 |
 
 guard 會把指令拆成一個個簡單指令來判讀，所以只是提到 `rm -rf` 的文字（例如在 `echo` 或 commit 訊息裡）不會被擋。
 
@@ -147,7 +147,7 @@ guard 會把指令拆成一個個簡單指令來判讀，所以只是提到 `rm 
 
 - **guard 判讀的是指令文字。** 它是防止無心之失的安全網，不是沙箱：換個寫法的指令（透過 script、`eval`、加引號的程式名稱）都能繞過。寫入規則只涵蓋檔案工具，所以 Bash 重新導向到專案外的路徑不會被檢查。啟動時用 `--add-dir` 加入的目錄 mod 看不到，請把它們列在 `writableRoots`。
 - **deny 規則和 managed hook 優先。** 在載入 Claude Code 內建 guard 的環境（有 managed settings 的機器，或以 Team、Enterprise 登入），`deny` 權限規則的效力高於 cockpit，所以「Run it once」無法核准被 deny 規則拒絕的呼叫。managed settings 裡會阻擋的 `PreToolUse` hook 同樣是最終決定。
-- **編輯的檔案由 git 計算。** turn 進行中你手動做的修改，也會算在那一輪。改名會顯示成刪除一個檔案、新增一個檔案。未追蹤的檔案超過 500 個時不列入計算。有變動的未追蹤檔案超過 50 個時，其餘的只列檔名、沒有行數。每一輪的開始和結束各要執行幾個 git 指令，在非常大的 repo 中會比較久。
+- **編輯的檔案由 git 計算。** turn 進行中你手動做的修改，也會算在那一輪。改名會顯示成刪除一個檔案、新增一個檔案。未追蹤的檔案超過 500 個時不列入計算。有變動的未追蹤檔案超過 50 個時，其餘的只列檔名、沒有行數。超過 2 MiB 的未追蹤檔案不會被寫進 `.git`：cockpit 改用大小與修改時間比對，有變動時顯示 `large file`，不計行數。每一輪的開始和結束各要執行幾個 git 指令，在非常大的 repo 中會比較久。
 - **round 的邊界取決於 model 的回應。** cockpit 計算每次回應裡的 `tool_use` block。由 API 端自己執行的工具（例如 advisor）不列入計算。
 - **Desktop app。** 測試只確認 cockpit 交給 Desktop spinner 的樹，app 實際怎麼畫出這段文字，要在真實 session 中才看得到。在 Desktop app 中，spinner 的字詞描述的是目前的步驟，而不是動畫用的動詞。
 - **檢視 subagent 時。** spinner 不會標明它屬於哪個 loop，所以你在檢視 subagent 的 transcript 時，那裡的 spinner 顯示的是主對話的 round。
@@ -176,7 +176,18 @@ claude plugin test .                # 以 engine 執行 tests/*.test.ts
 tsc -p .                            # Claude Code 載入過這個資料夾一次之後（會寫入 .claude-plugin/types/）
 ```
 
+CI（`.github/workflows/ci.yml`）會在 Linux、macOS 和 Windows 上執行前兩項。型別檢查需要 Claude Code 載入資料夾時寫出的 declarations，這只會在真實 session 中產生，所以 `tsc` 在本機執行。
+
 `NOTES.md` 記錄 mods 文件與這個 Claude Code build 的 declarations 不一致的地方。
+
+## 發布新版本
+
+已安裝的使用者會停在 `.claude-plugin/plugin.json` 裡的 `version`，直到這個值改變為止。改了 mod 卻沒有調高版本號，已安裝的人就收不到這次變更。每次發布：
+
+1. 調高 `.claude-plugin/plugin.json` 的 `version`（例如 `0.1.0` → `0.1.1`）。
+2. 推上去。使用者執行 `claude plugin update cockpit@claude-cockpit`，再在執行中的 session 輸入 `/reload-plugins` 即可取得新版本。
+
+pull request 若改了 `hooks/`、`types/` 或 `plugin.json`，卻沒有改版本號，CI 會失敗。
 
 ## 授權
 

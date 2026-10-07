@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 
 import type { CockpitTurnRow } from '../types'
-import { diffSnapshots, parseCounts, parseNumstat, snapshot } from '../hooks/lib/git'
+import { diffSnapshots, largeId, MAX_HASH_BYTES, parseCounts, parseNumstat, snapshot } from '../hooks/lib/git'
 import type { GitRun } from '../hooks/lib/git'
 import { makeRound, skillsOf } from '../hooks/lib/rounds'
 import {
@@ -182,6 +182,29 @@ describe('git snapshots', () => {
       return { ...value, stdout: value.stdout.replace(/\n/g, '\r\n') }
     }
     expect(await snapshot(crlf)).toEqual({ root: '/repo', tree: 'aaa', untracked: { 'notes.txt': 'b1' } })
+  })
+
+  test('a large untracked file is recorded by size and time, never hashed into .git', async () => {
+    const calls: string[][] = []
+    const stub = fakeGit(calls)
+    const run = gitRun(stub)
+    const big = { size: MAX_HASH_BYTES + 1, mtimeMs: 1_000 }
+    const stat = async (path: string) => (path.endsWith('/notes.txt') ? big : { size: 10, mtimeMs: 1 })
+    const before = await snapshot(run, stat)
+    expect(before?.untracked).toEqual({ 'notes.txt': largeId(big.size, big.mtimeMs) })
+    // notes.txt never went through hash-object.
+    expect(calls.some(argv => argv.join(' ').includes('hash-object'))).toBe(false)
+
+    // By the end it grew: listed as changed, its lines not counted.
+    big.mtimeMs = 2_000
+    const after = await snapshot(run, stat)
+    const edits = await diffSnapshots(run, before!, after!)
+    expect(edits?.files).toEqual([
+      { path: 'hooks/a.ts', added: 3, removed: 1 },
+      { path: 'new.txt', added: 5, removed: 0 },
+      { path: 'notes.txt', added: null, removed: null, large: true },
+    ])
+    expect(edits).toMatchObject({ added: 8, removed: 1 })
   })
 
   test('outside a git repository there is no snapshot', async () => {

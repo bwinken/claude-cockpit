@@ -68,7 +68,8 @@ export function shortPath(path: string, max: number): string {
 }
 
 /** `+682 −1`. */
-export function describeLines(edits: { added: number | null; removed: number | null }): string {
+export function describeLines(edits: { added: number | null; removed: number | null; large?: true }): string {
+  if (edits.large === true) return 'large file'
   if (edits.added === null && edits.removed === null) return 'binary'
   return `+${count(edits.added)} −${count(edits.removed)}`
 }
