@@ -5,6 +5,7 @@ import {
   addAgentCall,
   addCall,
   callOf,
+  checkRun,
   noteLabel,
   planFromTaskList,
   planFromTodos,
@@ -102,16 +103,19 @@ async function recordCall($: EngineInterface, e: Readonly<Record<string, unknown
   const input = argsOf(e)
   const error = a.deny !== undefined ? a.deny : a.isError ? a.text ?? (typeof a.result === 'string' ? a.result : 'failed') : undefined
   const isFailed = error !== undefined
+  // A shell command that ran tests, lint, a type-check or a build: its outcome is a check's.
+  const isShell = (e.tool === 'Bash' || e.tool === 'PowerShell') && typeof input.command === 'string'
+  const checked = isShell && input.run_in_background !== true && a.deny === undefined ? checkRun(String(input.command), a.isError === true, a.text ?? '') : null
   if (e.agentId !== undefined) {
     const agentId = e.agentId
     await update($, agentStats, current => addAgentCall(current, agentId, isFailed))
   } else {
     const started = e.tool === 'Agent' && !isFailed ? (a.result as { agentId?: unknown } | undefined)?.agentId : undefined
-    const call = callOf(e.tool, input, await rootOf($), error, typeof started === 'string' ? started : undefined)
+    const call = callOf(e.tool, input, await rootOf($), { error, agentId: typeof started === 'string' ? started : undefined, checked })
     await update($, live, turn => addCall(turn, call))
   }
-  if ((e.tool === 'Bash' || e.tool === 'PowerShell') && typeof input.command === 'string' && input.run_in_background !== true && a.deny === undefined) {
-    const command = input.command
+  if (checked !== null) {
+    const command = String(input.command)
     const at = await $.clock.now()
     await update($, checks, current => recordChecks(current, command, a.isError === true, a.text ?? '', at))
   }

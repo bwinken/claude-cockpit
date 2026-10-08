@@ -101,6 +101,14 @@ export type CockpitCall = {
   error?: string
   /** For an Agent call: the subagent it started, by the id its own calls carry. */
   agentId?: string
+  /** For a shell command that ran checks (tests, lint, …): which, and whether they passed. */
+  checked?: CockpitCheckRun
+}
+
+/** The checks one shell command ran, and whether they passed. */
+export type CockpitCheckRun = {
+  kinds: readonly CockpitCheckKind[]
+  isPassing: boolean
 }
 
 /** A kind of check a shell command runs. */

@@ -1,6 +1,6 @@
 {
   "name": "cockpit",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Makes a Claude Code session's work visible: the running round of tool calls, a per-turn summary, a session timeline, the files each turn edited, and a guard for destructive tool calls.",
   "author": {
     "name": "bwinken"

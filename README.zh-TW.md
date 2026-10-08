@@ -32,9 +32,9 @@ spinner 會顯示目前第幾輪、這輪跑幾個 tool call。turn 結束時，
 
 `/cockpit` 打開一個 pane，顯示整個 session 的狀況：context 用量、turn 數與失敗的呼叫、tools、最近一次的測試／lint／型別檢查／建置結果、計畫進度、用到的 skills 和 MCP server、tokens、改過的檔案，接著每輪一行，從 #1 往下。`/cockpit close` 關閉。想每次開 session 都自動打開，設定 `timelineAutoOpen`；終端機寬度不到 144 欄（自己開過一次後為 110 欄）時，pane 會等到終端機變寬或你執行 `/cockpit` 才顯示。
 
-![停靠在對話旁的 timeline pane](docs/images/timeline.png)
+![對話旁的 timeline pane：展開一輪，看得到每個呼叫、一開始失敗的測試，以及 subagent 那一輪](docs/images/timeline.png)
 
-每輪一行：prompt、呼叫數、時間、改動行數，有呼叫失敗（出錯、非零退出、被擋下）時標 `✗ n`。點一下某一輪，會在底下列出它的每個呼叫，失敗的用紅字並附上 Claude 讀到的錯誤，最後是它改過的檔案。
+每輪一行：prompt、呼叫數、時間、改動行數，有呼叫失敗（出錯、非零退出、被擋下）時標 `✗ n`。點一下某一輪，會在底下列出它的每個呼叫，失敗的用紅字並附上 Claude 讀到的錯誤；跑了檢查的指令會標出結果（`tests ✗`），最後是它改過的檔案。
 
 - **checks**：每種檢查最近一次的結果，Claude 或 subagent 跑的都算：`tests ✗ 2m ago · lint ✓ just now`。依 shell 指令內容判斷種類（`npm test`、`pytest`、`cargo clippy`、`tsc`、`npm run build` 等）；非零退出或輸出顯示失敗就算失敗。
 - **plan**：Claude 用 task 工具（TodoWrite，或 TaskCreate／TaskUpdate）列的步驟，畫成一條格子 `■■■□□ 3/5 · Running tests`：完成、進行中、待做。點一下列出各步驟。

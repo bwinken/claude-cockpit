@@ -2,7 +2,7 @@
 // checks a shell command ran (tests, lint, types, build), the plan the model
 // keeps, and what a subagent did. register.tsx feeds them tool.call results.
 
-import type { CockpitAgentStats, CockpitCall, CockpitCheck, CockpitCheckKind, CockpitLiveTurn, CockpitPlanItem } from '../../types'
+import type { CockpitAgentStats, CockpitCall, CockpitCheck, CockpitCheckKind, CockpitCheckRun, CockpitLiveTurn, CockpitPlanItem } from '../../types'
 import { count, formatDuration, toolLabel } from './rounds'
 import { program, segments } from './rules'
 import { noteOf } from './timeline'
@@ -80,13 +80,25 @@ export function errorLine(error: string): string {
 }
 
 /** The call as a turn records it. */
-export function callOf(tool: string, input: Record<string, unknown>, root: string, error?: string, agentId?: string): CockpitCall {
+export function callOf(
+  tool: string,
+  input: Record<string, unknown>,
+  root: string,
+  outcome: { error?: string; agentId?: string; checked?: CockpitCheckRun | null } = {},
+): CockpitCall {
+  const { error, agentId, checked } = outcome
   return {
     tool,
     subject: subjectOfCall(tool, input, root),
     ...(error !== undefined ? { error: errorLine(error) } : {}),
     ...(agentId !== undefined ? { agentId } : {}),
+    ...(checked ? { checked } : {}),
   }
+}
+
+/** `tests ✗`, `lint ✓ types ✓`: what a call checked, as its row shows it. */
+export function describeChecked(run: CockpitCheckRun): string {
+  return run.kinds.map(kind => kind + (run.isPassing ? ' ✓' : ' ✗')).join(' ')
 }
 
 /** `Read`, `github:get_issue`: a call's tool as its row shows it. */
@@ -135,9 +147,23 @@ export function checkKinds(command: string): CockpitCheckKind[] {
  */
 export function checkFailed(kinds: readonly CockpitCheckKind[], isError: boolean, output: string): boolean {
   if (isError) return true
-  if (/\b[1-9]\d* (?:failed|failing|failures?)\b/i.test(output) || /^\s*FAIL\b/m.test(output)) return true
+  const said = [
+    /\b[1-9]\d* (?:fail|failed|failing|failures?)\b/i, // `2 failed`, `1 fail` (bun, claude plugin test)
+    /^\s*FAIL\b/m, // jest, vitest
+    /^# fail\s+[1-9]/m, // node --test, TAP summaries
+    /^not ok \d+/m, // TAP
+    /^--- FAIL\b/m, // go test
+    /\btest result: FAILED\b/, // cargo test
+  ]
+  if (said.some(pattern => pattern.test(output))) return true
   const counted = kinds.includes('lint') || kinds.includes('types')
   return counted && (/\b[1-9]\d* errors?\b/i.test(output) || /\berror TS\d+:/.test(output))
+}
+
+/** What one shell command checked and whether it passed; null when it ran no check. */
+export function checkRun(command: string, isError: boolean, output: string): CockpitCheckRun | null {
+  const kinds = checkKinds(command)
+  return kinds.length === 0 ? null : { kinds, isPassing: !checkFailed(kinds, isError, output) }
 }
 
 /** The checks with a command's run in place of the ones it ran before. */
@@ -148,9 +174,9 @@ export function recordChecks(
   output: string,
   at: number,
 ): CockpitCheck[] {
-  const kinds = checkKinds(command)
-  if (kinds.length === 0) return [...checks]
-  const isPassing = !checkFailed(kinds, isError, output)
+  const run = checkRun(command, isError, output)
+  if (run === null) return [...checks]
+  const { kinds, isPassing } = run
   const runs = kinds.map(kind => ({ kind, isPassing, command: cut(command), at }))
   return [...checks.filter(check => !kinds.includes(check.kind)), ...runs].sort(
     (a, b) => KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind),

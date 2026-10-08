@@ -67,13 +67,19 @@ describe('activity helpers', () => {
   test('a check failed when the shell says so, or its output does', async () => {
     expect(checkFailed(['tests'], true, '')).toBe(true)
     // `npm test | tail` exits 0: the output still says.
-    expect(checkFailed(['tests'], false, ' 101 pass\n 2 fail\n')).toBe(false)
+    expect(checkFailed(['tests'], false, ' 101 pass\n 0 fail\n')).toBe(false)
     expect(checkFailed(['tests'], false, 'Tests: 2 failed, 40 passed')).toBe(true)
     expect(checkFailed(['tests'], false, 'FAIL src/a.test.ts')).toBe(true)
     expect(checkFailed(['tests'], false, '0 failed, 12 passed')).toBe(false)
     expect(checkFailed(['types'], false, "src/a.ts(3,1): error TS2322: Type 'x'")).toBe(true)
     expect(checkFailed(['lint'], false, '✖ 3 errors, 0 warnings')).toBe(true)
     expect(checkFailed(['tests'], false, '3 errors were expected and handled')).toBe(false)
+    // node --test and TAP, go, cargo, bun: piped through tail, only the output tells.
+    expect(checkFailed(['tests'], false, 'not ok 2 - SAVE10 takes 10% off\n# tests 2\n# pass 1\n# fail 1\n')).toBe(true)
+    expect(checkFailed(['tests'], false, 'ok 1 - sums\n# tests 1\n# pass 1\n# fail 0\n')).toBe(false)
+    expect(checkFailed(['tests'], false, '--- FAIL: TestTotal (0.00s)')).toBe(true)
+    expect(checkFailed(['tests'], false, 'test result: FAILED. 3 passed; 1 failed')).toBe(true)
+    expect(checkFailed(['tests'], false, ' 117 pass\n 1 fail\n')).toBe(true)
   })
 
   test("each kind keeps its last run, in a fixed order", async () => {
@@ -243,6 +249,33 @@ describe('timeline pane: what each turn did', () => {
     expect(lines[0]).toBe('#1 clean up 1 call 1.0s ✗ 1')
     expect(lines[1]).toBe('Bash ✗ rm -rf build')
     expect(lines[2]).toMatch(/^cockpit blocked this call: /)
+    await ui.unmount()
+  })
+
+  test('a check that failed shows on its call, though a pipe hid the exit code', async ($, on) => {
+    world(on, {
+      Bash: e =>
+        String(e.command).startsWith('npm test 2>&1 | tail')
+          ? { result: 'ok', text: 'not ok 2 - SAVE10 takes 10% off\n# pass 1\n# fail 1' }
+          : { result: 'ok', text: '# pass 2\n# fail 0' },
+    })
+    on('turn.step', stepsByTurn({ t1: [{ tools: ['Bash', 'Bash'] }, { tools: [] }] }))
+    await $.turn.start({ text: 'fix the tests', turnId: 't1' })
+    await drain($.turn.step({ turnId: 't1', index: 0, model: 'any-model', messageCount: 1 }))
+    await $.tool.call({ tool: 'Bash', command: 'npm test 2>&1 | tail -40; cat src/cart.js', tool_use_id: 'toolu_1' })
+    await $.tool.call({ tool: 'Bash', command: 'npm test', tool_use_id: 'toolu_2' })
+    await drain($.turn.step({ turnId: 't1', index: 1, model: 'any-model', messageCount: 3 }))
+    await $.turn.complete({ turnId: 't1', answer: 'done', durationMs: 1_000, isAborted: false, reason: 'answer' })
+
+    const ui = await $.ui.mount(pane('terminal'))
+    await ui.press({ key: 'turn-t1' })
+    // Not the turn's failures: finding a failing test is part of fixing it.
+    expect(await turnLines(ui)).toEqual([
+      '#1 fix the tests 2 calls 1.0s',
+      'Bash npm test 2>&1 | tail -40; cat src/cart.js tests ✗',
+      'Bash npm test tests ✓',
+    ])
+    expect(texts(await ui.find({ key: 'checks' })).join('')).toBe('  checkstests ✓ just now')
     await ui.unmount()
   })
 

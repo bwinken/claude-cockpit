@@ -32,9 +32,9 @@ A round is the set of tool calls in one model response. Subagents aren't counted
 
 `/cockpit` opens a pane with the session's state: context use, turns and failed calls, tools, the last test, lint, type-check and build runs, the plan's progress, the skills and MCP servers used, tokens and edited files, then one line per turn from #1 down. `/cockpit close` closes it. To open it at every session start, set `timelineAutoOpen`; on a terminal narrower than 144 columns (110 once you've opened it yourself) it waits until the terminal widens or you run `/cockpit`.
 
-![Timeline pane docked beside the transcript](docs/images/timeline.png)
+![Timeline pane beside the transcript: a turn pressed open to its calls, the failing test run it started from, and a subagent's turn](docs/images/timeline.png)
 
-Each turn is one line: its prompt, calls, time, lines changed and `✗ n` for calls that failed (an error, a non-zero exit, a blocked call). Press a turn to list its calls under it, failures in red with the error Claude read, then the files it edited.
+Each turn is one line: its prompt, calls, time, lines changed and `✗ n` for calls that failed (an error, a non-zero exit, a blocked call). Press a turn to list its calls under it, failures in red with the error Claude read, a command that ran checks with how they went (`tests ✗`), then the files it edited.
 
 - **checks**: the last run of each kind of check, by Claude or a subagent: `tests ✗ 2m ago · lint ✓ just now`. A shell command counts as one by what it runs (`npm test`, `pytest`, `cargo clippy`, `tsc`, `npm run build`, …); it failed when it exited non-zero or its output says so.
 - **plan**: the steps Claude keeps with its task tools (TodoWrite, or TaskCreate and TaskUpdate) as a bar, `■■■□□ 3/5 · Running tests`: done, running, waiting. Press it to list the steps.
