@@ -26,8 +26,10 @@ import {
   QUEUED_TURNS,
   readSteer,
   sessionTotals,
+  fitWidth,
   shortPath,
   startQueued,
+  textWidth,
 } from '../hooks/lib/timeline'
 import { band, drain, fakeGit, notGit, pane, stepsByTurn, SURFACES } from './helpers'
 
@@ -64,6 +66,13 @@ describe('timeline helpers', () => {
     expect(formatTokens(1_200_000)).toBe('1.2M')
     expect(oneLine('fix   the\nfailing  test', 50)).toBe('fix the failing test')
     expect(oneLine('a very long prompt indeed', 10)).toBe('a very lo…')
+    // A CJK character takes two columns; a combining mark none.
+    expect(textWidth('修正 bug')).toBe(8)
+    expect(textWidth('e\u0301')).toBe(1)
+    expect(fitWidth('請讀 config.ts  然後\n告訴我', 40)).toBe('請讀 config.ts 然後 告訴我')
+    expect(fitWidth('請讀設定檔然後告訴我', 9)).toBe('請讀設定…')
+    expect(textWidth(fitWidth('請讀設定檔然後告訴我', 10))).toBeLessThanOrEqual(10)
+    expect(fitWidth('a very long prompt indeed', 10)).toBe('a very lo…')
     expect(shortPath('hooks/lib/rounds.ts', 12)).toBe('…/rounds.ts')
   })
 
@@ -377,6 +386,36 @@ describe('timeline pane', () => {
         '#2 run the build | 1 call 1m 01s',
       ])
       expect(await ui.find({ type: 'Text', text: /NaN|undefined/ })).toBeUndefined()
+      await ui.unmount()
+    }
+  })
+
+  test('every row is one line, its calls and time in the same columns, whatever the prompt', async ($, on) => {
+    mock.clock(on)
+    on('session.usage', () => USAGE_NOW)
+    on('session.surfaces', () => ({ value: ['terminal'] }))
+    on('process.run', notGit())
+    on('turn.start', ($, e) => ({ turnId: e.turnId }))
+    on('turn.step', stepsByTurn(PLANS))
+    on('turn.complete', ($, e) => ({ text: e.answer }))
+
+    const chinese = '請讀 hooks/lib/config.ts 和 hooks/lib/version.ts，然後用兩三句話告訴我這兩個檔案分別負責什麼，以及它們之間有沒有關聯，回答請用繁體中文'
+    await runTurn($, 't1', chinese, 2, 7_800)
+    await runTurn($, 't2', 'run the build', 2, 61_000)
+    await $.turn.start({ text: '好', turnId: 't3' })
+    await drain($.turn.step({ turnId: 't3', index: 0, model: 'any-model', messageCount: 1 }))
+
+    for (const surface of SURFACES) {
+      const ui = await $.ui.mount(pane(surface, 80))
+      const list = (await ui.find({ key: 'turn-list' })) as { children: unknown[] }
+      const cells = list.children.map(child => texts(child))
+      // Each row: the prompt, then the stats, never more than the pane's width.
+      for (const [left, right] of cells) expect(textWidth(left!) + 1 + textWidth(right!)).toBeLessThanOrEqual(80)
+      expect(cells[0]![0]).toMatch(/^#1 請讀 hooks\/lib\/config\.ts.*…$/)
+      // The stats end in the same column on every row, the running one's too.
+      expect(new Set(cells.map(([, right]) => textWidth(right!))).size).toBe(1)
+      expect(cells.map(([, right]) => right!.trimEnd().length)).toEqual([17, 17, 17])
+      expect(cells[2]![1]!.trim()).toBe('round 1 · 1 call')
       await ui.unmount()
     }
   })

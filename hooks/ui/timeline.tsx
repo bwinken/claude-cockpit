@@ -12,10 +12,11 @@ import {
   describeContext,
   describeLines,
   describeTokens,
+  fitWidth,
   formatElapsed,
   NOTE_MARK,
-  oneLine,
   sessionTotals,
+  textWidth,
 } from '../lib/timeline'
 
 export type TimelineModel = {
@@ -35,12 +36,25 @@ export type TimelineModel = {
   context?: { tokens?: number; window?: number; percent?: number }
 }
 
-/** A row's right-hand side: `3 calls   5.6s  +18 −0`. */
-export function rowStats(row: CockpitTurnRow): string {
-  const parts = [describeCalls(row.rounds).padStart(8), formatDuration(row.durationMs).padStart(7)]
+/** The width of a row's calls column (`12 calls`), and of its time column (`1m 05s`). */
+const CALLS_WIDTH = 8
+const TIME_WIDTH = 7
+
+/** What a row adds after its time: `+18 −0`, `interrupted`, both, or nothing. */
+export function rowExtra(row: CockpitTurnRow): string {
+  const parts: string[] = []
   if (row.edits !== null && row.edits.files.length > 0) parts.push(describeLines(row.edits))
   if (row.isAborted) parts.push('interrupted')
   return parts.join('  ')
+}
+
+/**
+ * A row's right-hand side in fixed columns, `extraWidth` wide for the last:
+ * ` 3 calls     5.6s  +18 −0`. Every row's calls and time line up.
+ */
+export function rowStats(row: CockpitTurnRow, extraWidth = 0): string {
+  const stats = describeCalls(row.rounds).padStart(CALLS_WIDTH) + '  ' + formatDuration(row.durationMs).padStart(TIME_WIDTH)
+  return extraWidth > 0 ? stats + '  ' + rowExtra(row).padEnd(extraWidth) : stats
 }
 
 /** A turn's prompt for its line; a subagent's notification is marked `⚙`. */
@@ -88,12 +102,21 @@ export function timelineTree(ui: Elements[RenderSurface], model: TimelineModel):
     overview.push(field('edited', 'edited', `${files} ${files === 1 ? 'file' : 'files'} ${describeLines(totals.edits)}`))
   }
 
+  // Each turn is one line: its prompt cut to fit, then the stats in fixed columns,
+  // so the calls and times of every row line up whatever the prompt's script.
+  const allRows = [...timeline.compacted.flatMap(section => section.rows), ...timeline.rows]
+  const extraWidth = Math.max(0, ...allRows.map(row => textWidth(rowExtra(row))))
+  const statsWidth = CALLS_WIDTH + 2 + TIME_WIDTH + (extraWidth > 0 ? 2 + extraWidth : 0)
   const line = (key: string, left: string, right: string, isDim: boolean, color?: string) => (
-    <Box key={key} flexDirection="row" justifyContent="space-between" gap={1}>
-      <Text dimColor={isDim} color={color} wrap="truncate-end">
-        {oneLine(left, columns - right.length - 1)}
-      </Text>
-      <Text dimColor>{right}</Text>
+    <Box key={key} flexDirection="row" gap={1}>
+      <Box flexGrow={1} flexShrink={1}>
+        <Text dimColor={isDim} color={color} wrap="truncate-end">
+          {fitWidth(left, columns - Math.max(statsWidth, textWidth(right)) - 1)}
+        </Text>
+      </Box>
+      <Box flexShrink={0}>
+        <Text dimColor>{right}</Text>
+      </Box>
     </Box>
   )
 
@@ -103,7 +126,7 @@ export function timelineTree(ui: Elements[RenderSurface], model: TimelineModel):
     (texts ?? []).forEach((text, i) =>
       rows.push(
         <Text key={`${key}-${i}`} dimColor wrap="truncate-end">
-          {'   ↳ ' + oneLine(text, columns - 5 - note.length) + note}
+          {'   ↳ ' + fitWidth(text, columns - 5 - note.length) + note}
         </Text>,
       ),
     )
@@ -111,7 +134,7 @@ export function timelineTree(ui: Elements[RenderSurface], model: TimelineModel):
   // #1 at the top. Each compaction ends a segment; numbering starts again after it.
   timeline.compacted.forEach((section, s) => {
     section.rows.forEach((row, i) => {
-      rows.push(line(`old-${s}-${row.turnId}`, `#${i + 1} ${label(row)}`, rowStats(row), true))
+      rows.push(line(`old-${s}-${row.turnId}`, `#${i + 1} ${label(row)}`, rowStats(row, extraWidth), true))
       steers(`old-${s}-${row.turnId}-steer`, row.steers)
     })
     rows.push(
@@ -121,18 +144,20 @@ export function timelineTree(ui: Elements[RenderSurface], model: TimelineModel):
     )
   })
   timeline.rows.forEach((row, i) => {
-    rows.push(line('row-' + row.turnId, `#${i + 1} ${label(row)}`, rowStats(row), row.isNotification === true))
+    rows.push(line('row-' + row.turnId, `#${i + 1} ${label(row)}`, rowStats(row, extraWidth), row.isNotification === true))
     steers(`row-${row.turnId}-steer`, row.steers)
   })
   if (running !== null) {
-    rows.push(line('running', `▶ #${timeline.rows.length + 1} ${label(running)}`, roundBrief(running), false, 'claude'))
+    // Its round in place of calls and time: `round 2 · 3 calls`, ending where the times end.
+    const brief = roundBrief(running).padStart(CALLS_WIDTH + 2 + TIME_WIDTH)
+    rows.push(line('running', `▶ #${timeline.rows.length + 1} ${label(running)}`, brief + ' '.repeat(statsWidth - CALLS_WIDTH - 2 - TIME_WIDTH), false, 'claude'))
     steers('running-steer', running.steers)
     steers('running-waiting', running.waiting, ' · not read yet')
   }
   model.queued.forEach((text, i) =>
     rows.push(
       <Text key={'queued-' + i} dimColor wrap="truncate-end">
-        {'   ⋯ ' + oneLine(text, columns - 14) + ' · queued'}
+        {'   ⋯ ' + fitWidth(text, columns - 14) + ' · queued'}
       </Text>,
     ),
   )

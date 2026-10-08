@@ -59,6 +59,62 @@ export function oneLine(text: string, max: number): string {
   return line.slice(0, Math.max(0, room - 1)).trimEnd() + '…'
 }
 
+/** Whether a code point takes two terminal columns: CJK, Hangul, fullwidth forms, most emoji. */
+function isWide(code: number): boolean {
+  return (
+    (code >= 0x1100 && code <= 0x115f) ||
+    (code >= 0x2e80 && code <= 0x303e) ||
+    (code >= 0x3041 && code <= 0x33ff) ||
+    (code >= 0x3400 && code <= 0x4dbf) ||
+    (code >= 0x4e00 && code <= 0x9fff) ||
+    (code >= 0xa000 && code <= 0xa4cf) ||
+    (code >= 0xac00 && code <= 0xd7a3) ||
+    (code >= 0xf900 && code <= 0xfaff) ||
+    (code >= 0xfe30 && code <= 0xfe4f) ||
+    (code >= 0xff00 && code <= 0xff60) ||
+    (code >= 0xffe0 && code <= 0xffe6) ||
+    (code >= 0x1f300 && code <= 0x1f64f) ||
+    (code >= 0x1f900 && code <= 0x1f9ff) ||
+    (code >= 0x20000 && code <= 0x3fffd)
+  )
+}
+
+/** Whether a code point takes no column: combining marks, zero-width spaces and joiners, variation selectors. */
+function isZeroWidth(code: number): boolean {
+  return (code >= 0x0300 && code <= 0x036f) || (code >= 0x200b && code <= 0x200f) || (code >= 0xfe00 && code <= 0xfe0f)
+}
+
+function charWidth(char: string): number {
+  const code = char.codePointAt(0) ?? 0
+  return isZeroWidth(code) ? 0 : isWide(code) ? 2 : 1
+}
+
+/** How many terminal columns a text takes: `修正 bug` is 8. */
+export function textWidth(text: string): number {
+  let width = 0
+  for (const char of text) width += charWidth(char)
+  return width
+}
+
+/**
+ * One line of a text that fits `max` columns, cut with `…`: like oneLine,
+ * but a CJK character counts as the two columns it takes.
+ */
+export function fitWidth(text: string, max: number): string {
+  const line = text.replace(/\s+/g, ' ').trim()
+  const room = Math.max(1, count(max))
+  if (textWidth(line) <= room) return line
+  let out = ''
+  let width = 0
+  for (const char of line) {
+    const w = charWidth(char)
+    if (width + w > room - 1) break
+    out += char
+    width += w
+  }
+  return out.trimEnd() + '…'
+}
+
 /** A path cut from its start to `max` characters, at a `/` where one fits: `…/rounds.ts`. */
 export function shortPath(path: string, max: number): string {
   const room = Math.max(4, count(max))
