@@ -1,13 +1,24 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
+import {
+  addAgentCall,
+  addCall,
+  callOf,
+  noteLabel,
+  planFromTaskList,
+  planFromTodos,
+  planWithCreated,
+  planWithUpdate,
+  recordChecks,
+} from './lib/activity'
 import { appendAudit, auditLine } from './lib/audit'
 import type { AuditEntry } from './lib/audit'
 import { stubClassifier } from './lib/classifier'
 import { readConfig } from './lib/config'
 import { diffSnapshots, snapshot } from './lib/git'
 import type { GitRun, StatFile } from './lib/git'
-import { beginStep, endStep, skillsOf, spinnerText, startTurn, summarize, withStreaming } from './lib/rounds'
+import { beginStep, count, endStep, skillsOf, spinnerText, startTurn, summarize, withStreaming } from './lib/rounds'
 import {
   addRow,
   addSteer,
@@ -52,6 +63,12 @@ export const timeline = atom({ plugin: 'cockpit', key: 'timeline' } as const, { 
 export const queued = atom({ plugin: 'cockpit', key: 'queued' } as const, [])
 /** The summaries of background tasks' notifications submitted since the last turn started. */
 const notes = atom({ plugin: 'cockpit', key: 'notes' } as const, [])
+/** The turn whose calls the pane lists under it, by id; null for none. */
+const expandedTurn = atom({ plugin: 'cockpit', key: 'expandedTurn' } as const, null)
+export const checks = atom({ plugin: 'cockpit', key: 'checks' } as const, [])
+export const plan = atom({ plugin: 'cockpit', key: 'plan' } as const, [])
+const planExpanded = atom({ plugin: 'cockpit', key: 'planExpanded' } as const, false)
+const agentStats = atom({ plugin: 'cockpit', key: 'agentStats' } as const, {})
 const tick = atom({ plugin: 'cockpit', key: 'tick' } as const, 0)
 const inventory = atom({ plugin: 'cockpit', key: 'inventory' } as const, null)
 const autoBlocks = atom({ plugin: 'cockpit', key: 'autoBlocks' } as const, {})
@@ -65,6 +82,63 @@ export const editsDismissed = atom({ plugin: 'cockpit', key: 'editsDismissed' } 
 const MAX_QUEUED = 5
 /** The most notification summaries kept for the turn that runs them. */
 const MAX_NOTES = 100
+
+/** The session's root, to show paths inside it as relative; '' when there is none. */
+async function rootOf($: EngineInterface): Promise<string> {
+  try {
+    return await $.session.root()
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * One tool call as the timeline keeps it: on the running turn (the main loop's)
+ * or in its subagent's counts, as a check's run when it ran one, and in the
+ * plan when it changed it.
+ */
+async function recordCall($: EngineInterface, e: Readonly<Record<string, unknown>> & { tool: string; agentId?: string }, answer: unknown): Promise<void> {
+  const a = (answer ?? {}) as { deny?: string; isError?: true; text?: string; result?: unknown }
+  const input = argsOf(e)
+  const error = a.deny !== undefined ? a.deny : a.isError ? a.text ?? (typeof a.result === 'string' ? a.result : 'failed') : undefined
+  const isFailed = error !== undefined
+  if (e.agentId !== undefined) {
+    const agentId = e.agentId
+    await update($, agentStats, current => addAgentCall(current, agentId, isFailed))
+  } else {
+    const started = e.tool === 'Agent' && !isFailed ? (a.result as { agentId?: unknown } | undefined)?.agentId : undefined
+    const call = callOf(e.tool, input, await rootOf($), error, typeof started === 'string' ? started : undefined)
+    await update($, live, turn => addCall(turn, call))
+  }
+  if ((e.tool === 'Bash' || e.tool === 'PowerShell') && typeof input.command === 'string' && input.run_in_background !== true && a.deny === undefined) {
+    const command = input.command
+    const at = await $.clock.now()
+    await update($, checks, current => recordChecks(current, command, a.isError === true, a.text ?? '', at))
+  }
+  if (isFailed) return
+  if (e.tool === 'TodoWrite') {
+    const items = planFromTodos(input.todos)
+    if (items !== null) await update($, plan, () => items)
+  } else if (e.tool === 'TaskCreate') {
+    await update($, plan, current => planWithCreated(current, a.result, input))
+  } else if (e.tool === 'TaskUpdate') {
+    await update($, plan, current => planWithUpdate(current, input))
+  } else if (e.tool === 'TaskList') {
+    const items = planFromTaskList(await read($, plan), a.result)
+    if (items !== null) await update($, plan, () => items)
+  }
+}
+
+/** The answer a tool.call hook returns, recorded on the timeline first when it's one of the model's calls. */
+async function observed<T>(
+  $: EngineInterface,
+  e: Readonly<Record<string, unknown>> & { tool: string; agentId?: string; tool_use_id?: string },
+  answer: T,
+  isRecorded: boolean,
+): Promise<T> {
+  if (isRecorded && e.tool_use_id !== undefined) await recordCall($, e, answer)
+  return answer
+}
 
 /** Whether a prompt came from the person: typed, through Remote Control, or the SDK host's. */
 function isPerson(kind: string): boolean {
@@ -315,7 +389,8 @@ export const register: Register = (on, options) => {
         submitted = [...late.map(entry => entry.text.slice(NOTE_MARK.length)), ...(await read($, notes))]
         await update($, notes, current => (current.length === 0 ? current : []))
       }
-      const { prompt, isNotification } = promptOf(e.text, submitted)
+      const label = noteOf(e.text) === null ? undefined : noteLabel(e.text, await read($, agentStats)) ?? undefined
+      const { prompt, isNotification } = promptOf(e.text, submitted, label)
       await update($, live, () => ({ ...startTurn(e.turnId, oneLine(prompt, PROMPT_KEPT)), ...(isNotification ? { isNotification: true as const } : {}) }))
       if (config.editedFiles) {
         const git = await snapshot(gitOf($), statOf($))
@@ -336,7 +411,7 @@ export const register: Register = (on, options) => {
           const turnId = e.turnId
           await update($, live, turn => addSteer(turn, turnId, oneLine(entered.text, PROMPT_KEPT)))
         }
-        const note = e.origin.kind === 'task-notification' ? noteOf(entered.text) : null
+        const note = e.origin.kind === 'task-notification' ? noteLabel(entered.text, await read($, agentStats)) : null
         if (note !== null && e.turnId !== undefined) {
           // A subagent finishing while a turn runs: delivered into it, as a typed prompt is.
           const turnId = e.turnId
@@ -435,6 +510,8 @@ export const register: Register = (on, options) => {
           edits,
           ...(turn.isNotification ? { isNotification: true as const } : {}),
           ...(turn.steers !== undefined && turn.steers.length > 0 ? { steers: turn.steers } : {}),
+          ...(turn.calls !== undefined && turn.calls.length > 0 ? { calls: turn.calls } : {}),
+          ...(count(turn.failed) > 0 ? { failed: count(turn.failed) } : {}),
         }
         await update($, timeline, current => addRow(current, row))
         const unread = turn.waiting ?? []
@@ -499,10 +576,24 @@ export const register: Register = (on, options) => {
       const running = await read($, live)
       const onHand = await read($, inventory)
       const waiting = await read($, queued)
+      let now: number | undefined
+      try {
+        now = await $.clock.now()
+      } catch {
+        // No clock: the checks show without their age.
+      }
       return timelineTree($.ui.resolve(e), {
         timeline: turns,
         running,
         queued: waiting.map(entry => entry.text),
+        checks: await read($, checks),
+        plan: await read($, plan),
+        isPlanExpanded: await read($, planExpanded),
+        expandedTurn: await read($, expandedTurn),
+        agentStats: await read($, agentStats),
+        now,
+        onToggleTurn: (turnId: string) => update($, expandedTurn, current => (current === turnId ? null : turnId)),
+        onTogglePlan: () => update($, planExpanded, shown => !shown),
         skills: describeSkills(onHand, turns, running),
         mcp: describeMcp(onHand, turns, running),
         columns: e.props.bodyColumns,
@@ -547,28 +638,33 @@ export const register: Register = (on, options) => {
     })
   }
 
-  if (config.gate) {
-    // The deterministic layer, then the classifier seam, then the call; and
-    // when auto mode blocked it, the one question this guard ever asks.
+  // One tool.call hook for both, as a module may register only one without a matcher.
+  // The guard: the deterministic layer, then the classifier seam, then the call;
+  // and when auto mode blocked it, the one question this guard ever asks. The
+  // timeline: every answer the hook returns is recorded on its way out.
+  if (config.gate || config.timeline) {
     on('tool.call', async ($, e, next) => {
+      // The model's own calls, by any loop; not another plugin's $.tool.call.
+      const isRecorded = config.timeline && next.origin.plugin === 'engine'
+      if (!config.gate) return observed($, e, await next(e), isRecorded)
       const guard = await guardOf($, config.gateRulesFile, config.gateDisabledRules)
       const args = argsOf(e)
       const subject = subjectOf(e.tool, args)
       const verdict = checkCall(e.tool, args, guard.rules) ?? (await writeVerdict($, e.tool, args, guard))
       if (verdict !== null) {
         await recordDecision($, { tool: e.tool, decision: 'deny', rule: verdict.rule, subject, reason: verdict.reason })
-        return { deny: 'cockpit blocked this call: ' + verdict.reason }
+        return observed($, e, { deny: 'cockpit blocked this call: ' + verdict.reason }, isRecorded)
       }
       const running = await read($, live)
       const opinion = await stubClassifier({ tool: e.tool, input: args, lastPrompt: running?.prompt ?? '' })
       if (opinion.decision === 'deny') {
         const reason = opinion.reason ?? 'the classifier refused it'
         await recordDecision($, { tool: e.tool, decision: 'deny', rule: 'classifier', subject, reason })
-        return { deny: 'cockpit blocked this call: ' + reason + '. Find another way, or ask the user.' }
+        return observed($, e, { deny: 'cockpit blocked this call: ' + reason + '. Find another way, or ask the user.' }, isRecorded)
       }
 
       const result = await next(e)
-      if (!config.gateAutoModePrompt || !isRefused(result) || e.tool_use_id === undefined) return result
+      if (!config.gateAutoModePrompt || !isRefused(result) || e.tool_use_id === undefined) return observed($, e, result, isRecorded)
       // The block auto mode noted for this call: by its id, or else by its tool and subject.
       // A block older than AUTO_BLOCK_MS belongs to some other, earlier call: ignored.
       const checkedAt = await $.clock.now()
@@ -578,7 +674,7 @@ export const register: Register = (on, options) => {
         [...blocks]
           .reverse()
           .find(([, b]) => b.tool === e.tool && b.subject === subject)
-      if (found === undefined) return result
+      if (found === undefined) return observed($, e, result, isRecorded)
       const [blockKey, block] = found
       const id = e.tool_use_id
       await update($, autoBlocks, all =>
@@ -601,7 +697,7 @@ export const register: Register = (on, options) => {
       }
       if (answer !== RUN_ONCE) {
         await recordDecision($, { tool: e.tool, decision: 'kept-auto-block', rule: 'auto-mode', subject, reason: block.reason })
-        return result
+        return observed($, e, result, isRecorded)
       }
       const now = await $.clock.now()
       await update($, approvals, list => [...list.filter(a => now - a.at < APPROVAL_MS), { toolUseId: id, tool: e.tool, subject, at: now }])
@@ -609,11 +705,13 @@ export const register: Register = (on, options) => {
       // Run it again: this time cockpit's tool.check answers allow, so the classifier isn't asked.
       // The approval lasts exactly this one run.
       try {
-        return await next(e)
+        return observed($, e, await next(e), isRecorded)
       } finally {
         await update($, approvals, list => list.filter(a => a.toolUseId !== id))
       }
     }).catch(($, e, next) => {
+      // With the guard off this hook only records: whatever happened, the call goes on.
+      if (!config.gate) return next(e)
       if (next.error.kind === 're-entry') {
         // Asked beneath this hook's own call: judge from the event alone, no $ call,
         // with every built-in rule on (the rules file can't be read here).
@@ -632,7 +730,9 @@ export const register: Register = (on, options) => {
           'Try the call again; if this keeps happening, tell the user the cockpit guard is failing.',
       }
     })
+  }
 
+  if (config.gate) {
     // Runs after the rules, the mode and the settings hooks have decided: let
     // through one call the user approved after an auto-mode block, and calls
     // an allow rule in the user's own rules file names. Never loosens a deny.

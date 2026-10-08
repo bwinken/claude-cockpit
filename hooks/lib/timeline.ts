@@ -152,9 +152,18 @@ function trim(timeline: CockpitTimeline): CockpitTimeline {
   return { compacted, rows: excess > 0 ? timeline.rows.slice(excess) : timeline.rows }
 }
 
+/** How many of the newest turns keep their calls; older ones keep only their counts. */
+export const ROWS_WITH_CALLS = 50
+
 /** The timeline with a finished turn appended. */
 export function addRow(timeline: CockpitTimeline, row: CockpitTurnRow): CockpitTimeline {
-  return trim({ ...timeline, rows: [...timeline.rows, row] })
+  const rows = [...timeline.rows, row]
+  const stale = rows.length - ROWS_WITH_CALLS - 1
+  if (stale >= 0 && rows[stale]!.calls !== undefined) {
+    const { calls: _, ...rest } = rows[stale]!
+    rows[stale] = rest
+  }
+  return trim({ ...timeline, rows })
 }
 
 /** The running turn with a prompt the user typed over it, not read yet. */
@@ -168,7 +177,8 @@ export const NOTE_MARK = '⚙ '
 
 /** Whether `text` holds `prompt`, as cut to one line (a trailing `…` and a NOTE_MARK ignored). */
 function holds(text: string, prompt: string): boolean {
-  const bare = (prompt.startsWith(NOTE_MARK) ? prompt.slice(NOTE_MARK.length) : prompt).replace(/…$/, '')
+  // A notification's line is its summary, then what the subagent did: match the summary.
+  const bare = (prompt.startsWith(NOTE_MARK) ? prompt.slice(NOTE_MARK.length).split(' · ')[0]! : prompt).replace(/…$/, '')
   return oneLine(text, Number.MAX_SAFE_INTEGER).includes(bare)
 }
 
@@ -216,8 +226,8 @@ export function noteOf(text: string): string | null {
  * subagent finishing) reads as the first one's summary, and `+n more` when
  * the engine ran several as one turn: `notes`, as each was submitted.
  */
-export function promptOf(text: string, notes: readonly string[] = []): { prompt: string; isNotification: boolean } {
-  const own = noteOf(text)
+export function promptOf(text: string, notes: readonly string[] = [], label?: string): { prompt: string; isNotification: boolean } {
+  const own = noteOf(text) === null ? null : label ?? noteOf(text)!
   if (own === null) return { prompt: text, isNotification: false }
   const all = notes.length > 0 ? notes : [own]
   const count = Math.max(all.length, (text.match(/<task-notification>/g) ?? []).length)
@@ -337,7 +347,7 @@ function names(entries: string[], max: number): string {
   return shown.join(', ') + (entries.length > shown.length ? `, +${entries.length - shown.length} more` : '')
 }
 
-/** `14 · commit ×2, review-pr, init, +11 more`: the used ones first, with their counts. */
+/** `26 available · used commit ×2, review-pr`, or `26 available` while none is used. */
 export function describeSkills(inventory: CockpitInventory | null, timeline: CockpitTimeline, running: CockpitLiveTurn | null): string {
   const used = new Map<string, number>()
   for (const round of rounds(timeline, running)) {
@@ -345,15 +355,13 @@ export function describeSkills(inventory: CockpitInventory | null, timeline: Coc
   }
   const listed = inventory?.skills.map(skill => skill.name) ?? []
   if (listed.length === 0 && used.size === 0) return inventory === null ? 'checking…' : 'none listed'
-  const ordered = [
-    ...[...used].sort((a, b) => b[1] - a[1]).map(([name, n]) => (n > 1 ? `${name} ×${n}` : `${name} ✓`)),
-    ...listed.filter(name => !used.has(name)),
-  ]
   const total = new Set([...listed, ...used.keys()]).size
-  return `${total} · ${names(ordered, MAX_NAMES)}`
+  if (used.size === 0) return `${total} available`
+  const ordered = [...used].sort((a, b) => b[1] - a[1]).map(([name, n]) => (n > 1 ? `${name} ×${n}` : name))
+  return `${total} available · used ${names(ordered, MAX_NAMES)}`
 }
 
-/** `2 connected · github ×3 (24 tools), linear (8 tools)`: the used servers first. */
+/** `2 connected · used github ×3`, or `2 connected · github, linear` while none is used. */
 export function describeMcp(inventory: CockpitInventory | null, timeline: CockpitTimeline, running: CockpitLiveTurn | null): string {
   if (inventory === null) return 'checking…'
   if (inventory.mcp.length === 0) return 'none connected'
@@ -364,11 +372,8 @@ export function describeMcp(inventory: CockpitInventory | null, timeline: Cockpi
       if (server) calls.set(server.name, (calls.get(server.name) ?? 0) + count(n))
     }
   }
-  const ordered = [...inventory.mcp]
-    .sort((a, b) => (calls.get(b.name) ?? 0) - (calls.get(a.name) ?? 0))
-    .map(server => {
-      const n = calls.get(server.name) ?? 0
-      return `${server.name}${n > 0 ? ' ×' + n : ''} (${server.tools} ${server.tools === 1 ? 'tool' : 'tools'})`
-    })
-  return `${inventory.mcp.length} connected · ${names(ordered, MAX_NAMES)}`
+  const head = `${inventory.mcp.length} connected · `
+  if (calls.size === 0) return head + names(inventory.mcp.map(server => server.name), MAX_NAMES)
+  const ordered = [...calls].sort((a, b) => b[1] - a[1]).map(([name, n]) => (n > 1 ? `${name} ×${n}` : name))
+  return head + 'used ' + names(ordered, MAX_NAMES)
 }

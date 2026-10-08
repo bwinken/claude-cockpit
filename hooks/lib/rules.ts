@@ -69,7 +69,7 @@ export function segments(command: string): string[][] {
 }
 
 /** The words from the program on: leading `VAR=value`, `sudo`, `command`, `env`, `nohup`, `time` skipped. */
-function program(words: readonly string[]): string[] {
+export function program(words: readonly string[]): string[] {
   let i = 0
   while (i < words.length) {
     const word = words[i]!

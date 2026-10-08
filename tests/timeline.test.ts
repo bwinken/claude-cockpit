@@ -25,6 +25,7 @@ import {
   promptOf,
   QUEUED_TURNS,
   readSteer,
+  ROWS_WITH_CALLS,
   sessionTotals,
   fitWidth,
   shortPath,
@@ -124,8 +125,11 @@ describe('timeline helpers', () => {
       ...row('t1'),
       rounds: [makeRound(['Skill', 'mcp__github__get_issue', 'mcp__github__create_pr'], ['commit'])],
     })
-    expect(describeSkills(inventory, used, null)).toBe('3 · commit ✓, review-pr, init')
-    expect(describeMcp(inventory, used, null)).toBe('2 connected · github ×2 (2 tools), claude.ai Linear (1 tool)')
+    // Only what was used is named: the rest are counted.
+    expect(describeSkills(inventory, used, null)).toBe('3 available · used commit')
+    expect(describeMcp(inventory, used, null)).toBe('2 connected · used github ×2')
+    expect(describeSkills(inventory, EMPTY_TIMELINE, null)).toBe('3 available')
+    expect(describeMcp(inventory, EMPTY_TIMELINE, null)).toBe('2 connected · claude.ai Linear, github')
     // Before the first read, and with nothing on hand.
     expect(describeSkills(null, EMPTY_TIMELINE, null)).toBe('checking…')
     expect(describeMcp(null, EMPTY_TIMELINE, null)).toBe('checking…')
@@ -133,7 +137,8 @@ describe('timeline helpers', () => {
     expect(describeSkills({ skills: [], mcp: [] }, EMPTY_TIMELINE, null)).toBe('none listed')
     // Past MAX_NAMES the rest are counted.
     const many = { skills: Array.from({ length: 9 }, (_, i) => ({ name: 's' + i, source: 'plugin' })), mcp: [] }
-    expect(describeSkills(many, EMPTY_TIMELINE, null)).toBe('9 · s0, s1, s2, s3, s4, s5, +3 more')
+    const busy = addRow(EMPTY_TIMELINE, { ...row('t1'), rounds: [makeRound(['Skill'], ['s0', 's1', 's2', 's3', 's4', 's5', 's6', 's7', 's7'])] })
+    expect(describeSkills(many, busy, null)).toBe('9 available · used s7 ×2, s0, s1, s2, s3, s4, +2 more')
     // Without a breakdown the tool list still names the servers.
     expect(inventoryFromTools([{ name: 'Read', mcp: false }, { name: 'mcp__github__get_issue', mcp: true }])).toEqual({
       skills: [],
@@ -197,6 +202,14 @@ describe('timeline helpers', () => {
     expect(noteOf('fix the bug')).toBeNull()
     // The engine ran three as one turn; the turn's text carries only the last.
     expect(promptOf(note('a3', 'three'), ['Agent "one" finished', 'Agent "two" finished', 'Agent "three" finished']).prompt).toBe('Agent "one" finished +2 more')
+  })
+
+  test('only the newest ROWS_WITH_CALLS turns keep their calls', async () => {
+    let timeline = EMPTY_TIMELINE
+    for (let i = 0; i < ROWS_WITH_CALLS + 3; i++) timeline = addRow(timeline, { ...row('t' + i), calls: [{ tool: 'Read', subject: 'a' }], failed: 1 })
+    expect(timeline.rows.filter(r => r.calls !== undefined)).toHaveLength(ROWS_WITH_CALLS)
+    expect(timeline.rows[0]).not.toHaveProperty('calls')
+    expect(timeline.rows[0]!.failed).toBe(1)
   })
 
   test('keeps at most MAX_ROWS turns, the oldest going first', async () => {
@@ -301,7 +314,9 @@ const PLANS = {
 function texts(node: unknown): string[] {
   if (typeof node === 'string') return [node]
   if (node === null || typeof node !== 'object') return []
-  const el = node as { type?: string; children?: unknown[] }
+  const el = node as { type?: string; children?: unknown[]; props?: { label?: string } }
+  // A row's prompt is a Button: its label is its text.
+  if (el.type === 'Button') return [el.props?.label ?? '']
   const inner = (el.children ?? []).flatMap(texts)
   return el.type === 'Text' ? [inner.join('')] : inner
 }
@@ -596,8 +611,8 @@ describe('timeline pane', () => {
     await runTurn($, 't1', 'commit the change and link the issue', 2)
     for (const surface of SURFACES) {
       const ui = await $.ui.mount(pane(surface))
-      expect(await ui.find({ type: 'Text', text: '3 · commit ✓, review-pr, init' })).toBeDefined()
-      expect(await ui.find({ type: 'Text', text: '2 connected · github ×1 (2 tools), linear (1 tool)' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: '3 available · used commit' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: '2 connected · used github' })).toBeDefined()
       await ui.unmount()
     }
   })
