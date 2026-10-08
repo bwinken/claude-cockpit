@@ -7,6 +7,7 @@ export type CockpitConfig = {
   roundTrace: boolean
   roundTraceMaxTools: number
   timeline: boolean
+  timelineAutoOpen: boolean
   editedFiles: boolean
   gate: boolean
   gateAutoModePrompt: boolean
@@ -28,6 +29,7 @@ export function readConfig(options: PluginOptions): CockpitConfig {
     roundTrace: flag(options.roundTrace, true),
     roundTraceMaxTools: number(options.roundTraceMaxTools, 5, 1, 20),
     timeline: flag(options.timeline, true),
+    timelineAutoOpen: flag(options.timelineAutoOpen, false),
     editedFiles: flag(options.editedFiles, true),
     gate: flag(options.gate, true),
     gateAutoModePrompt: flag(options.gateAutoModePrompt, true),

@@ -14,6 +14,8 @@ Requires Claude Code **2.1.292** or later. In a terminal session, run:
 
 Answer `y` to add the marketplace and pick the user scope. cockpit loads right away, and also in the sessions the Desktop app starts on the same machine.
 
+Nothing shows on an idle session: the spinner and summary appear once Claude calls tools, and the timeline pane opens with `/cockpit` (or at every start with `timelineAutoOpen`).
+
 To try a checkout without installing: `claude --plugin-dir ./claude-cockpit`.
 
 ## Features
@@ -28,7 +30,7 @@ A round is the set of tool calls in one model response. Subagents aren't counted
 
 ### Timeline pane
 
-`/cockpit` opens a pane with the session's state: context use, turns, tools, skills, connected MCP servers, tokens and edited files, then one line per turn from #1 down. `/cockpit close` closes it.
+`/cockpit` opens a pane with the session's state: context use, turns, tools, skills, connected MCP servers, tokens and edited files, then one line per turn from #1 down. `/cockpit close` closes it. To open it at every session start, set `timelineAutoOpen`; on a terminal narrower than 144 columns (110 once you've opened it yourself) it waits until the terminal widens or you run `/cockpit`.
 
 ![Timeline pane docked beside the transcript](docs/images/timeline.png)
 
@@ -75,6 +77,7 @@ Set these in `/config`, or under `pluginConfigs["cockpit@claude-cockpit"].option
 | `roundTrace` | `true` | Round tracing |
 | `roundTraceMaxTools` | `5` | Tools named in the summary (1–20) |
 | `timeline` | `true` | Timeline pane and `/cockpit` |
+| `timelineAutoOpen` | `false` | Open the pane at every session start |
 | `editedFiles` | `true` | Edited files band (off: git never runs) |
 | `gate` | `true` | Tool guard |
 | `gateAutoModePrompt` | `true` | Ask after auto mode blocks a call |

@@ -1,6 +1,6 @@
 {
   "name": "cockpit",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Makes a Claude Code session's work visible: the running round of tool calls, a per-turn summary, a session timeline, the files each turn edited, and a guard for destructive tool calls.",
   "author": {
     "name": "bwinken"
@@ -38,6 +38,12 @@
       "title": "Timeline pane",
       "description": "Keep a row per turn (prompt, tool calls, tokens, time, edited files) and add the /cockpit command that opens it in a pane.",
       "default": true
+    },
+    "timelineAutoOpen": {
+      "type": "boolean",
+      "title": "Open the timeline pane at start",
+      "description": "Open the timeline pane when each session starts, instead of waiting for /cockpit. A pane opened this way waits on a terminal narrower than 144 columns (110 once you have opened it yourself) until the terminal widens or you run /cockpit.",
+      "default": false
     },
     "editedFiles": {
       "type": "boolean",

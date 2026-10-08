@@ -70,10 +70,10 @@ export function timelineTree(ui: Elements[RenderSurface], model: TimelineModel):
         ` · ${totals.calls} tool ${totals.calls === 1 ? 'call' : 'calls'}`,
     ),
   ]
-  if (totals.tools.length > 0) overview.push(field('tools', 'tools', formatTally(totals.tools, maxTools)))
+  overview.push(field('tools', 'tools', totals.tools.length > 0 ? formatTally(totals.tools, maxTools) : 'no calls yet'))
   overview.push(field('skills', 'skills', model.skills))
   overview.push(field('mcp', 'mcp', model.mcp))
-  overview.push(field('tokens', 'tokens', describeTokens(totals.tokens)))
+  overview.push(field('tokens', 'tokens', totals.turns === 0 && totals.tokens.responses === 0 ? 'none yet' : describeTokens(totals.tokens)))
   if (totals.edits !== null) {
     const files = totals.edits.files.length
     overview.push(field('edited', 'edited', `${files} ${files === 1 ? 'file' : 'files'} ${describeLines(totals.edits)}`))

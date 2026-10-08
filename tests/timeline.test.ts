@@ -282,6 +282,22 @@ describe('timeline pane', () => {
     expect(opened).toEqual([{ id: 'cockpit-timeline', title: 'Cockpit timeline' }])
   })
 
+  test('with timelineAutoOpen, the session start opens the pane', { options: { timelineAutoOpen: true } }, async ($, on) => {
+    const opened: unknown[] = []
+    mock.clock(on)
+    on('session.start', () => ({ cwd: '/work' }))
+    on('session.version', () => ({ value: { version: '2.1.292', base: '2.1.292', builtAt: '' } }))
+    on('command.register', ($, e) => ({ value: { command: e.name } }))
+    on('ui.open', ($, e) => {
+      opened.push(e)
+      // A narrow terminal: the engine keeps an unasked pane waiting, and that's fine.
+      return { value: { isPlaced: false, reason: 'below 144 columns' } }
+    })
+
+    await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+    expect(opened).toEqual([{ id: 'cockpit-timeline', title: 'Cockpit timeline' }])
+  })
+
   test('the session overview, then one line per turn from #1 down, on both surfaces', async ($, on) => {
     mock.clock(on, { now: 760_000 })
     on('session.usage', () => USAGE_NOW)
@@ -405,8 +421,10 @@ describe('timeline pane', () => {
       const ui = await $.ui.mount(pane(surface))
       expect(await ui.find({ type: 'Text', text: 'Session' })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: 'not measured yet' })).toBeDefined()
-      expect(await ui.find({ type: 'Text', text: 'no token usage reported' })).toBeDefined()
+      // Before the first turn there is nothing to report yet, which isn't the same as a provider reporting none.
+      expect(await ui.find({ type: 'Text', text: 'none yet' })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: 'checking…' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: 'no calls yet' })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: 'No turns yet in this conversation.' })).toBeDefined()
       await ui.unmount()
     }
