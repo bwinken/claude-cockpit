@@ -30,11 +30,17 @@ A round is the set of tool calls in one model response. Subagents aren't counted
 
 ### Timeline pane
 
-`/cockpit` opens a pane with the session's state: context use, turns, tools, skills, connected MCP servers, tokens and edited files, then one line per turn from #1 down. `/cockpit close` closes it. To open it at every session start, set `timelineAutoOpen`; on a terminal narrower than 144 columns (110 once you've opened it yourself) it waits until the terminal widens or you run `/cockpit`.
+`/cockpit` opens a pane with the session's state: context use, turns and failed calls, tools, the last test, lint, type-check and build runs, the plan's progress, the skills and MCP servers used, tokens and edited files, then one line per turn from #1 down. `/cockpit close` closes it. To open it at every session start, set `timelineAutoOpen`; on a terminal narrower than 144 columns (110 once you've opened it yourself) it waits until the terminal widens or you run `/cockpit`.
 
 ![Timeline pane docked beside the transcript](docs/images/timeline.png)
 
-A compaction draws a `── compacted ──` divider and numbering restarts. `/clear`, `/resume` and `/branch` start an empty timeline.
+Each turn is one line: its prompt, calls, time, lines changed and `✗ n` for calls that failed (an error, a non-zero exit, a blocked call). Press a turn to list its calls under it, failures in red with the error Claude read, then the files it edited.
+
+- **checks**: the last run of each kind of check, by Claude or a subagent: `tests ✗ 2m ago · lint ✓ just now`. A shell command counts as one by what it runs (`npm test`, `pytest`, `cargo clippy`, `tsc`, `npm run build`, …); it failed when it exited non-zero or its output says so.
+- **plan**: the steps Claude keeps with its task tools (TodoWrite, or TaskCreate and TaskUpdate) as a bar, `■■■□□ 3/5 · Running tests`: done, running, waiting. Press it to list the steps.
+- **skills** and **mcp** name only what was used.
+
+A message you type while Claude is still answering shows as a dim `↳` line under the turn that read it; if the turn ends first, it shows as `⋯ queued` until it runs as a turn of its own. A background subagent finishing shows as `⚙ Agent "…" finished · 3 calls · 2.1s`, with `✗ n` when some of its calls failed: under the running turn when it arrives mid-turn, or as its own turn (`+n more` when several land together). A compaction draws a `── compacted ──` divider and numbering restarts. `/clear`, `/resume` and `/branch` start an empty timeline.
 
 ### Edited files band
 

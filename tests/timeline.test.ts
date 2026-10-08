@@ -3,9 +3,10 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { CockpitTurnRow } from '../types'
 import { diffSnapshots, largeId, MAX_HASH_BYTES, parseCounts, parseNumstat, snapshot } from '../hooks/lib/git'
 import type { GitRun } from '../hooks/lib/git'
-import { makeRound, skillsOf } from '../hooks/lib/rounds'
+import { makeRound, skillsOf, startTurn } from '../hooks/lib/rounds'
 import {
   addRow,
+  addSteer,
   addUsage,
   describeTokens,
   EMPTY_TIMELINE,
@@ -19,9 +20,17 @@ import {
   formatElapsed,
   inventoryFrom,
   inventoryFromTools,
+  noteOf,
   oneLine,
+  promptOf,
+  QUEUED_TURNS,
+  readSteer,
+  ROWS_WITH_CALLS,
   sessionTotals,
+  fitWidth,
   shortPath,
+  startQueued,
+  textWidth,
 } from '../hooks/lib/timeline'
 import { band, drain, fakeGit, notGit, pane, stepsByTurn, SURFACES } from './helpers'
 
@@ -58,6 +67,13 @@ describe('timeline helpers', () => {
     expect(formatTokens(1_200_000)).toBe('1.2M')
     expect(oneLine('fix   the\nfailing  test', 50)).toBe('fix the failing test')
     expect(oneLine('a very long prompt indeed', 10)).toBe('a very lo…')
+    // A CJK character takes two columns; a combining mark none.
+    expect(textWidth('修正 bug')).toBe(8)
+    expect(textWidth('e\u0301')).toBe(1)
+    expect(fitWidth('請讀 config.ts  然後\n告訴我', 40)).toBe('請讀 config.ts 然後 告訴我')
+    expect(fitWidth('請讀設定檔然後告訴我', 9)).toBe('請讀設定…')
+    expect(textWidth(fitWidth('請讀設定檔然後告訴我', 10))).toBeLessThanOrEqual(10)
+    expect(fitWidth('a very long prompt indeed', 10)).toBe('a very lo…')
     expect(shortPath('hooks/lib/rounds.ts', 12)).toBe('…/rounds.ts')
   })
 
@@ -109,8 +125,11 @@ describe('timeline helpers', () => {
       ...row('t1'),
       rounds: [makeRound(['Skill', 'mcp__github__get_issue', 'mcp__github__create_pr'], ['commit'])],
     })
-    expect(describeSkills(inventory, used, null)).toBe('3 · commit ✓, review-pr, init')
-    expect(describeMcp(inventory, used, null)).toBe('2 connected · github ×2 (2 tools), claude.ai Linear (1 tool)')
+    // Only what was used is named: the rest are counted.
+    expect(describeSkills(inventory, used, null)).toBe('3 available · used commit')
+    expect(describeMcp(inventory, used, null)).toBe('2 connected · used github ×2')
+    expect(describeSkills(inventory, EMPTY_TIMELINE, null)).toBe('3 available')
+    expect(describeMcp(inventory, EMPTY_TIMELINE, null)).toBe('2 connected · claude.ai Linear, github')
     // Before the first read, and with nothing on hand.
     expect(describeSkills(null, EMPTY_TIMELINE, null)).toBe('checking…')
     expect(describeMcp(null, EMPTY_TIMELINE, null)).toBe('checking…')
@@ -118,7 +137,8 @@ describe('timeline helpers', () => {
     expect(describeSkills({ skills: [], mcp: [] }, EMPTY_TIMELINE, null)).toBe('none listed')
     // Past MAX_NAMES the rest are counted.
     const many = { skills: Array.from({ length: 9 }, (_, i) => ({ name: 's' + i, source: 'plugin' })), mcp: [] }
-    expect(describeSkills(many, EMPTY_TIMELINE, null)).toBe('9 · s0, s1, s2, s3, s4, s5, +3 more')
+    const busy = addRow(EMPTY_TIMELINE, { ...row('t1'), rounds: [makeRound(['Skill'], ['s0', 's1', 's2', 's3', 's4', 's5', 's6', 's7', 's7'])] })
+    expect(describeSkills(many, busy, null)).toBe('9 available · used s7 ×2, s0, s1, s2, s3, s4, +2 more')
     // Without a breakdown the tool list still names the servers.
     expect(inventoryFromTools([{ name: 'Read', mcp: false }, { name: 'mcp__github__get_issue', mcp: true }])).toEqual({
       skills: [],
@@ -134,6 +154,62 @@ describe('timeline helpers', () => {
     expect(timeline.compacted.map(section => section.rows.map(r => r.turnId))).toEqual([['t1', 't2']])
     // A compaction with no turn since the last one adds no empty section.
     expect(foldCompacted(timeline)).toBe(timeline)
+  })
+
+  test('a prompt typed mid-turn waits until the model reads it', async () => {
+    const running = addSteer(addSteer(startTurn('t1', 'fix it'), 't1', 'use pnpm'), 't1', 'and skip the e2e tests')
+    expect(running?.waiting).toEqual(['use pnpm', 'and skip the e2e tests'])
+    // Another turn's id, or no turn running: nothing to add to.
+    expect(addSteer(running, 't2', 'x')).toBe(running)
+    expect(addSteer(null, 't1', 'x')).toBeNull()
+
+    // The delivery names the prompt it carries, whatever its order.
+    const read = readSteer(running, 'The user sent a new message while you were working:\nand skip the\ne2e tests\n')
+    expect(read).toMatchObject({ steers: ['and skip the e2e tests'], waiting: ['use pnpm'] })
+    // One that names none reads the oldest; with nothing waiting it changes nothing.
+    const both = readSteer(read, 'something else')
+    expect(both).toMatchObject({ steers: ['and skip the e2e tests', 'use pnpm'], waiting: [] })
+    expect(readSteer(both, 'x')).toBe(both)
+    // A notification's delivery reads a notification, never a typed prompt.
+    const mixed = addSteer(addSteer(startTurn('t1'), 't1', 'use pnpm'), 't1', '⚙ Agent "lint" finished')
+    expect(readSteer(mixed, '<task-notification>\n<summary>Agent "lint" finished</summary>')).toMatchObject({ steers: ['⚙ Agent "lint" finished'], waiting: ['use pnpm'] })
+    expect(readSteer(mixed, '<task-notification>\n<summary>Agent "other" finished</summary>')?.steers).toEqual(['⚙ Agent "lint" finished'])
+    const typedOnly = addSteer(startTurn('t1'), 't1', 'use pnpm')
+    expect(readSteer(typedOnly, '<task-notification>\n<summary>Agent "x" finished</summary>')).toBe(typedOnly)
+    // A prompt cut to PROMPT_KEPT still matches the full text.
+    const long = addSteer(startTurn('t1'), 't1', oneLine('word '.repeat(100), 20))
+    expect(readSteer(long, 'word '.repeat(100))?.steers).toHaveLength(1)
+  })
+
+  test('a queued prompt leaves when its turn starts, or after QUEUED_TURNS others', async () => {
+    let queued = startQueued([{ text: 'then deploy', passed: 0 }, { text: 'and lint', passed: 0 }], 'then  deploy')
+    expect(queued).toEqual([{ text: 'and lint', passed: 1 }])
+    for (let i = 1; i < QUEUED_TURNS; i++) queued = startQueued(queued, 'another prompt')
+    expect(queued).toEqual([])
+    // A notification's turn runs every queued notification with it.
+    const notes = [{ text: '⚙ Agent "a" finished', passed: 0 }, { text: 'and lint', passed: 0 }, { text: '⚙ Agent "b" finished', passed: 0 }]
+    expect(startQueued(notes, '<task-notification>\n<summary>Agent "c" finished</summary>\n</task-notification>')).toEqual([{ text: 'and lint', passed: 1 }])
+    expect(startQueued(notes, 'and lint')).toHaveLength(2)
+  })
+
+  test("a subagent's notification reads as its summary", async () => {
+    const note = (id: string, name: string) =>
+      `<task-notification>\n<task-id>${id}</task-id>\n<status>completed</status>\n<summary>Agent "${name}" finished</summary>\n<result>…</result>\n</task-notification>`
+    expect(promptOf(note('a1', 'Exports of git.ts'))).toEqual({ prompt: 'Agent "Exports of git.ts" finished', isNotification: true })
+    expect(promptOf(note('a1', 'one') + '\n' + note('a2', 'two')).prompt).toBe('Agent "one" finished +1 more')
+    expect(promptOf('<task-notification>\n<task-id>a1</task-id>\n</task-notification>').prompt).toBe('Background task finished')
+    expect(promptOf('fix the <summary>bug</summary>')).toEqual({ prompt: 'fix the <summary>bug</summary>', isNotification: false })
+    expect(noteOf('fix the bug')).toBeNull()
+    // The engine ran three as one turn; the turn's text carries only the last.
+    expect(promptOf(note('a3', 'three'), ['Agent "one" finished', 'Agent "two" finished', 'Agent "three" finished']).prompt).toBe('Agent "one" finished +2 more')
+  })
+
+  test('only the newest ROWS_WITH_CALLS turns keep their calls', async () => {
+    let timeline = EMPTY_TIMELINE
+    for (let i = 0; i < ROWS_WITH_CALLS + 3; i++) timeline = addRow(timeline, { ...row('t' + i), calls: [{ tool: 'Read', subject: 'a' }], failed: 1 })
+    expect(timeline.rows.filter(r => r.calls !== undefined)).toHaveLength(ROWS_WITH_CALLS)
+    expect(timeline.rows[0]).not.toHaveProperty('calls')
+    expect(timeline.rows[0]!.failed).toBe(1)
   })
 
   test('keeps at most MAX_ROWS turns, the oldest going first', async () => {
@@ -238,7 +314,9 @@ const PLANS = {
 function texts(node: unknown): string[] {
   if (typeof node === 'string') return [node]
   if (node === null || typeof node !== 'object') return []
-  const el = node as { type?: string; children?: unknown[] }
+  const el = node as { type?: string; children?: unknown[]; props?: { label?: string } }
+  // A row's prompt is a Button: its label is its text.
+  if (el.type === 'Button') return [el.props?.label ?? '']
   const inner = (el.children ?? []).flatMap(texts)
   return el.type === 'Text' ? [inner.join('')] : inner
 }
@@ -327,6 +405,36 @@ describe('timeline pane', () => {
     }
   })
 
+  test('every row is one line, its calls and time in the same columns, whatever the prompt', async ($, on) => {
+    mock.clock(on)
+    on('session.usage', () => USAGE_NOW)
+    on('session.surfaces', () => ({ value: ['terminal'] }))
+    on('process.run', notGit())
+    on('turn.start', ($, e) => ({ turnId: e.turnId }))
+    on('turn.step', stepsByTurn(PLANS))
+    on('turn.complete', ($, e) => ({ text: e.answer }))
+
+    const chinese = '請讀 hooks/lib/config.ts 和 hooks/lib/version.ts，然後用兩三句話告訴我這兩個檔案分別負責什麼，以及它們之間有沒有關聯，回答請用繁體中文'
+    await runTurn($, 't1', chinese, 2, 7_800)
+    await runTurn($, 't2', 'run the build', 2, 61_000)
+    await $.turn.start({ text: '好', turnId: 't3' })
+    await drain($.turn.step({ turnId: 't3', index: 0, model: 'any-model', messageCount: 1 }))
+
+    for (const surface of SURFACES) {
+      const ui = await $.ui.mount(pane(surface, 80))
+      const list = (await ui.find({ key: 'turn-list' })) as { children: unknown[] }
+      const cells = list.children.map(child => texts(child))
+      // Each row: the prompt, then the stats, never more than the pane's width.
+      for (const [left, right] of cells) expect(textWidth(left!) + 1 + textWidth(right!)).toBeLessThanOrEqual(80)
+      expect(cells[0]![0]).toMatch(/^#1 請讀 hooks\/lib\/config\.ts.*…$/)
+      // The stats end in the same column on every row, the running one's too.
+      expect(new Set(cells.map(([, right]) => textWidth(right!))).size).toBe(1)
+      expect(cells.map(([, right]) => right!.trimEnd().length)).toEqual([17, 17, 17])
+      expect(cells[2]![1]!.trim()).toBe('round 1 · 1 call')
+      await ui.unmount()
+    }
+  })
+
   test('the running turn is the last line while it runs', async ($, on) => {
     mock.clock(on)
     on('session.usage', () => USAGE_NOW)
@@ -344,6 +452,100 @@ describe('timeline pane', () => {
       const lines = await turnLines(ui)
       expect(lines[0]).toMatch(/^#1 run the build \| 1 call/)
       expect(lines[1]).toBe('▶ #2 read the two config files | round 1 · 2 calls')
+      await ui.unmount()
+    }
+  })
+
+  test('a prompt typed while a turn runs shows under it, and under it once the model reads it', async ($, on) => {
+    // 2.1.292's kit can't raise session.append; from 2.1.294 it stores the rows itself.
+    if (typeof mock.session !== 'function') return
+    mock.clock(on)
+    on('session.usage', () => USAGE_NOW)
+    on('session.surfaces', () => ({ value: ['terminal'] }))
+    on('process.run', notGit())
+    on('turn.start', ($, e) => ({ turnId: e.turnId }))
+    on('turn.step', stepsByTurn(PLANS))
+    on('turn.complete', ($, e) => ({ text: e.answer }))
+    on('prompt.submit', ($, e) => (e.text === 'blocked' ? { drop: 'no' } : { text: e.text }))
+    mock.session(on)
+    const deliver = (text: string, kind: 'composer' | 'peer' | 'task-notification' = 'composer') =>
+      $.session.append({
+        message: { type: 'attachment', name: 'queued_command', role: 'user', isMeta: true, content: [{ type: 'text', text: `<system-reminder>\nThe user sent a new message while you were working:\n${text}\n</system-reminder>` }] },
+        door: 'delivery',
+        origin: { kind },
+        uuid: 'u-' + text,
+      })
+
+    await $.turn.start({ text: 'read the two config files', turnId: 't1' })
+    await drain($.turn.step({ turnId: 't1', index: 0, model: 'any-model', messageCount: 1 }))
+    await $.prompt.submit({ text: 'only the  yaml\none', turnId: 't1', wait: false, origin: { kind: 'composer' } })
+    for (const surface of SURFACES) {
+      const ui = await $.ui.mount(pane(surface))
+      expect(await turnLines(ui)).toEqual(['▶ #1 read the two config files | round 1 · 2 calls', '↳ only the yaml one · not read yet'])
+      await ui.unmount()
+    }
+
+    // A subagent finishing while the turn runs is delivered into it too.
+    const note = '<task-notification>\n<task-id>a1</task-id>\n<summary>Agent "Lint" finished</summary>\n</task-notification>'
+    await $.prompt.submit({ text: note, turnId: 't1', wait: false, origin: { kind: 'task-notification' } })
+
+    // The model reads them before its next request; a peer's delivery isn't the person's.
+    await deliver('a peer message', 'peer')
+    await deliver('only the  yaml\none')
+    await deliver(note, 'task-notification')
+    await drain($.turn.step({ turnId: 't1', index: 1, model: 'any-model', messageCount: 3 }))
+    await $.turn.complete({ turnId: 't1', answer: 'done', durationMs: 2_000, isAborted: false, reason: 'answer' })
+    for (const surface of SURFACES) {
+      const ui = await $.ui.mount(pane(surface))
+      expect((await turnLines(ui)).map(line => line.split(' | ')[0])).toEqual(['#1 read the two config files', '↳ only the yaml one', '↳ ⚙ Agent "Lint" finished'])
+      await ui.unmount()
+    }
+  })
+
+  test('a prompt the turn ended without reading waits, queued, until it runs as a turn', async ($, on) => {
+    mock.clock(on)
+    on('session.usage', () => USAGE_NOW)
+    on('session.surfaces', () => ({ value: ['terminal'] }))
+    on('process.run', notGit())
+    on('turn.start', ($, e) => ({ turnId: e.turnId }))
+    on('turn.step', stepsByTurn(PLANS))
+    on('turn.complete', ($, e) => ({ text: e.answer }))
+    on('prompt.submit', ($, e) => (e.text === 'blocked' ? { drop: 'no' } : { text: e.text }))
+
+    await $.turn.start({ text: 'run the build', turnId: 't1' })
+    await drain($.turn.step({ turnId: 't1', index: 0, model: 'any-model', messageCount: 1 }))
+    await $.prompt.submit({ text: 'then deploy', turnId: 't1', wait: false, origin: { kind: 'composer' } })
+    // Not the person's own words, or a prompt that never entered: neither is shown.
+    await $.prompt.submit({ text: 'a peer message', turnId: 't1', wait: false, origin: { kind: 'peer' } })
+    await $.prompt.submit({ text: 'blocked', turnId: 't1', wait: false, origin: { kind: 'composer' } })
+    // A subagent finishing while t1 runs.
+    const note = (id: string, name: string) => `<task-notification>\n<task-id>${id}</task-id>\n<summary>Agent "${name}" finished</summary>\n</task-notification>`
+    await $.prompt.submit({ text: note('a1', 'Build docs'), turnId: 't1', wait: false, origin: { kind: 'task-notification' } })
+    for (const surface of SURFACES) {
+      const ui = await $.ui.mount(pane(surface))
+      expect((await turnLines(ui)).slice(1)).toEqual(['↳ then deploy · not read yet', '↳ ⚙ Agent "Build docs" finished · not read yet'])
+      await ui.unmount()
+    }
+    await drain($.turn.step({ turnId: 't1', index: 1, model: 'any-model', messageCount: 3 }))
+    await $.turn.complete({ turnId: 't1', answer: 'done', durationMs: 4_000, isAborted: false, reason: 'answer' })
+    // t1 read neither. Both notifications run first, as one turn t2; the prompt runs after it, as t3.
+    await $.prompt.submit({ text: note('a2', 'Lint'), wait: false, origin: { kind: 'task-notification' } })
+    await $.turn.start({ text: note('a2', 'Lint'), turnId: 't2' })
+    for (const surface of SURFACES) {
+      const ui = await $.ui.mount(pane(surface))
+      expect((await turnLines(ui)).map(line => line.split(' | ')[0])).toEqual([
+        '#1 run the build',
+        '▶ #2 ⚙ Agent "Build docs" finished +1 more',
+        '⋯ then deploy · queued',
+      ])
+      await ui.unmount()
+    }
+    await $.turn.complete({ turnId: 't2', answer: 'done', durationMs: 1_000, isAborted: false, reason: 'answer' })
+    await $.turn.start({ text: 'then deploy', turnId: 't3' })
+
+    for (const surface of SURFACES) {
+      const ui = await $.ui.mount(pane(surface))
+      expect((await turnLines(ui)).map(line => line.split(' | ')[0])).toEqual(['#1 run the build', '#2 ⚙ Agent "Build docs" finished +1 more', '▶ #3 then deploy'])
       await ui.unmount()
     }
   })
@@ -409,8 +611,8 @@ describe('timeline pane', () => {
     await runTurn($, 't1', 'commit the change and link the issue', 2)
     for (const surface of SURFACES) {
       const ui = await $.ui.mount(pane(surface))
-      expect(await ui.find({ type: 'Text', text: '3 · commit ✓, review-pr, init' })).toBeDefined()
-      expect(await ui.find({ type: 'Text', text: '2 connected · github ×1 (2 tools), linear (1 tool)' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: '3 available · used commit' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: '2 connected · used github' })).toBeDefined()
       await ui.unmount()
     }
   })

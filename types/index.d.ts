@@ -80,6 +80,62 @@ export type CockpitLiveTurn = {
   streaming: number | null
   tokens: CockpitTokens
   git?: CockpitGitSnapshot | null
+  /** True for a turn a background task's notification started (a subagent finishing). */
+  isNotification?: true
+  /** Prompts the user typed while this turn ran that the model has read, oldest first, each cut to one line. */
+  steers?: readonly string[]
+  /** Prompts the user typed while this turn ran that the model hasn't read yet. */
+  waiting?: readonly string[]
+  /** The turn's tool calls so far, the first MAX_CALLS of them. */
+  calls?: readonly CockpitCall[]
+  /** How many of its tool calls failed, counted past MAX_CALLS too. */
+  failed?: number
+}
+
+/** One tool call of a turn, for its expanded row: what ran on what, and how it failed. */
+export type CockpitCall = {
+  tool: string
+  /** The path, command, pattern or description it ran on, cut to one line; '' when none says. */
+  subject: string
+  /** The first line of the error the model read; absent when the call succeeded. */
+  error?: string
+  /** For an Agent call: the subagent it started, by the id its own calls carry. */
+  agentId?: string
+}
+
+/** A kind of check a shell command runs. */
+export type CockpitCheckKind = 'tests' | 'lint' | 'types' | 'build'
+
+/** The last run of one kind of check, by any loop. */
+export type CockpitCheck = {
+  kind: CockpitCheckKind
+  isPassing: boolean
+  command: string
+  /** When it finished, in `$.clock.now()` milliseconds. */
+  at: number
+}
+
+/** One step of the plan the model keeps with TodoWrite or the Task tools. */
+export type CockpitPlanItem = {
+  /** The Task tools' id; absent for TodoWrite's. */
+  id?: string
+  text: string
+  /** The words shown while it runs (`Running tests`), when given. */
+  active?: string
+  status: 'pending' | 'in_progress' | 'completed'
+}
+
+/** A subagent's calls and failures, by its id. */
+export type CockpitAgentStats = {
+  calls: number
+  failed: number
+}
+
+/** A prompt typed over a turn that ended before reading it: it waits to run as a turn of its own. */
+export type CockpitQueued = {
+  text: string
+  /** How many turns have started since it was queued without being it. */
+  passed: number
 }
 
 /**
@@ -101,6 +157,13 @@ export type CockpitTurnRow = {
   durationMs: number
   isAborted: boolean
   edits: CockpitEdits | null
+  isNotification?: true
+  /** Prompts the user typed while the turn ran and the model read within it. */
+  steers?: readonly string[]
+  /** The turn's tool calls, the first MAX_CALLS of them. */
+  calls?: readonly CockpitCall[]
+  /** How many of its tool calls failed. */
+  failed?: number
 }
 
 /** The turns before one compaction, folded under a header. */
@@ -139,6 +202,13 @@ declare module 'claude-code' {
       live: CockpitLiveTurn | null
       turnLines: readonly CockpitTurnLine[]
       timeline: CockpitTimeline
+      queued: readonly CockpitQueued[]
+      notes: readonly string[]
+      expandedTurn: string | null
+      checks: readonly CockpitCheck[]
+      plan: readonly CockpitPlanItem[]
+      planExpanded: boolean
+      agentStats: Readonly<Record<string, CockpitAgentStats>>
       tick: number
       inventory: CockpitInventory | null
       autoBlocks: Readonly<Record<string, CockpitAutoBlock>>

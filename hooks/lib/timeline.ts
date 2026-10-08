@@ -5,6 +5,7 @@ import type {
   CockpitInventory,
   CockpitLiveTurn,
   CockpitMcpServer,
+  CockpitQueued,
   CockpitRound,
   CockpitTimeline,
   CockpitTokens,
@@ -58,6 +59,62 @@ export function oneLine(text: string, max: number): string {
   return line.slice(0, Math.max(0, room - 1)).trimEnd() + '…'
 }
 
+/** Whether a code point takes two terminal columns: CJK, Hangul, fullwidth forms, most emoji. */
+function isWide(code: number): boolean {
+  return (
+    (code >= 0x1100 && code <= 0x115f) ||
+    (code >= 0x2e80 && code <= 0x303e) ||
+    (code >= 0x3041 && code <= 0x33ff) ||
+    (code >= 0x3400 && code <= 0x4dbf) ||
+    (code >= 0x4e00 && code <= 0x9fff) ||
+    (code >= 0xa000 && code <= 0xa4cf) ||
+    (code >= 0xac00 && code <= 0xd7a3) ||
+    (code >= 0xf900 && code <= 0xfaff) ||
+    (code >= 0xfe30 && code <= 0xfe4f) ||
+    (code >= 0xff00 && code <= 0xff60) ||
+    (code >= 0xffe0 && code <= 0xffe6) ||
+    (code >= 0x1f300 && code <= 0x1f64f) ||
+    (code >= 0x1f900 && code <= 0x1f9ff) ||
+    (code >= 0x20000 && code <= 0x3fffd)
+  )
+}
+
+/** Whether a code point takes no column: combining marks, zero-width spaces and joiners, variation selectors. */
+function isZeroWidth(code: number): boolean {
+  return (code >= 0x0300 && code <= 0x036f) || (code >= 0x200b && code <= 0x200f) || (code >= 0xfe00 && code <= 0xfe0f)
+}
+
+function charWidth(char: string): number {
+  const code = char.codePointAt(0) ?? 0
+  return isZeroWidth(code) ? 0 : isWide(code) ? 2 : 1
+}
+
+/** How many terminal columns a text takes: `修正 bug` is 8. */
+export function textWidth(text: string): number {
+  let width = 0
+  for (const char of text) width += charWidth(char)
+  return width
+}
+
+/**
+ * One line of a text that fits `max` columns, cut with `…`: like oneLine,
+ * but a CJK character counts as the two columns it takes.
+ */
+export function fitWidth(text: string, max: number): string {
+  const line = text.replace(/\s+/g, ' ').trim()
+  const room = Math.max(1, count(max))
+  if (textWidth(line) <= room) return line
+  let out = ''
+  let width = 0
+  for (const char of line) {
+    const w = charWidth(char)
+    if (width + w > room - 1) break
+    out += char
+    width += w
+  }
+  return out.trimEnd() + '…'
+}
+
 /** A path cut from its start to `max` characters, at a `/` where one fits: `…/rounds.ts`. */
 export function shortPath(path: string, max: number): string {
   const room = Math.max(4, count(max))
@@ -95,9 +152,86 @@ function trim(timeline: CockpitTimeline): CockpitTimeline {
   return { compacted, rows: excess > 0 ? timeline.rows.slice(excess) : timeline.rows }
 }
 
+/** How many of the newest turns keep their calls; older ones keep only their counts. */
+export const ROWS_WITH_CALLS = 50
+
 /** The timeline with a finished turn appended. */
 export function addRow(timeline: CockpitTimeline, row: CockpitTurnRow): CockpitTimeline {
-  return trim({ ...timeline, rows: [...timeline.rows, row] })
+  const rows = [...timeline.rows, row]
+  const stale = rows.length - ROWS_WITH_CALLS - 1
+  if (stale >= 0 && rows[stale]!.calls !== undefined) {
+    const { calls: _, ...rest } = rows[stale]!
+    rows[stale] = rest
+  }
+  return trim({ ...timeline, rows })
+}
+
+/** The running turn with a prompt the user typed over it, not read yet. */
+export function addSteer(live: CockpitLiveTurn | null, turnId: string, text: string): CockpitLiveTurn | null {
+  if (live === null || live.turnId !== turnId || text === '') return live
+  return { ...live, waiting: [...(live.waiting ?? []), text] }
+}
+
+/** What marks a background task's notification among a turn's prompts. */
+export const NOTE_MARK = '⚙ '
+
+/** Whether `text` holds `prompt`, as cut to one line (a trailing `…` and a NOTE_MARK ignored). */
+function holds(text: string, prompt: string): boolean {
+  // A notification's line is its summary, then what the subagent did: match the summary.
+  const bare = (prompt.startsWith(NOTE_MARK) ? prompt.slice(NOTE_MARK.length).split(' · ')[0]! : prompt).replace(/…$/, '')
+  return oneLine(text, Number.MAX_SAFE_INTEGER).includes(bare)
+}
+
+/**
+ * The running turn once the model is handed a prompt typed over it, or a
+ * notification delivered into it (`text` is the delivery as the model reads
+ * it): that one, or the oldest waiting of its kind when none matches, moves
+ * from waiting to read.
+ */
+export function readSteer(live: CockpitLiveTurn | null, text: string): CockpitLiveTurn | null {
+  const waiting = live?.waiting ?? []
+  if (live === null || waiting.length === 0) return live
+  const isNote = text.includes('<task-notification>')
+  const found = waiting.findIndex(prompt => holds(text, prompt))
+  const at = found >= 0 ? found : waiting.findIndex(prompt => prompt.startsWith(NOTE_MARK) === isNote)
+  if (at < 0) return live
+  return { ...live, steers: [...(live.steers ?? []), waiting[at]!], waiting: waiting.filter((_, i) => i !== at) }
+}
+
+/** How many turns a queued prompt may see start before it's let go. */
+export const QUEUED_TURNS = 3
+
+/**
+ * The queued prompts as a turn starts: the ones the turn runs leave (every
+ * queued notification, when a notification starts it: the engine runs them
+ * together), the rest count the turn, and one that has seen QUEUED_TURNS go
+ * by is let go.
+ */
+export function startQueued(queued: readonly CockpitQueued[], prompt: string): CockpitQueued[] {
+  const isNote = noteOf(prompt) !== null
+  return queued
+    .filter(entry => !holds(prompt, entry.text) && !(isNote && entry.text.startsWith(NOTE_MARK)))
+    .map(entry => ({ ...entry, passed: entry.passed + 1 }))
+    .filter(entry => entry.passed < QUEUED_TURNS)
+}
+
+/** A background task's notification as its summary (`Agent "x" finished`); null for any other prompt. */
+export function noteOf(text: string): string | null {
+  if (!text.trimStart().startsWith('<task-notification>')) return null
+  return /<summary>([\s\S]*?)<\/summary>/.exec(text)?.[1]?.trim() || 'Background task finished'
+}
+
+/**
+ * The prompt a turn shows. A turn background tasks' notifications start (a
+ * subagent finishing) reads as the first one's summary, and `+n more` when
+ * the engine ran several as one turn: `notes`, as each was submitted.
+ */
+export function promptOf(text: string, notes: readonly string[] = [], label?: string): { prompt: string; isNotification: boolean } {
+  const own = noteOf(text) === null ? null : label ?? noteOf(text)!
+  if (own === null) return { prompt: text, isNotification: false }
+  const all = notes.length > 0 ? notes : [own]
+  const count = Math.max(all.length, (text.match(/<task-notification>/g) ?? []).length)
+  return { prompt: all[0]! + (count > 1 ? ` +${count - 1} more` : ''), isNotification: true }
 }
 
 /**
@@ -213,7 +347,7 @@ function names(entries: string[], max: number): string {
   return shown.join(', ') + (entries.length > shown.length ? `, +${entries.length - shown.length} more` : '')
 }
 
-/** `14 · commit ×2, review-pr, init, +11 more`: the used ones first, with their counts. */
+/** `26 available · used commit ×2, review-pr`, or `26 available` while none is used. */
 export function describeSkills(inventory: CockpitInventory | null, timeline: CockpitTimeline, running: CockpitLiveTurn | null): string {
   const used = new Map<string, number>()
   for (const round of rounds(timeline, running)) {
@@ -221,15 +355,13 @@ export function describeSkills(inventory: CockpitInventory | null, timeline: Coc
   }
   const listed = inventory?.skills.map(skill => skill.name) ?? []
   if (listed.length === 0 && used.size === 0) return inventory === null ? 'checking…' : 'none listed'
-  const ordered = [
-    ...[...used].sort((a, b) => b[1] - a[1]).map(([name, n]) => (n > 1 ? `${name} ×${n}` : `${name} ✓`)),
-    ...listed.filter(name => !used.has(name)),
-  ]
   const total = new Set([...listed, ...used.keys()]).size
-  return `${total} · ${names(ordered, MAX_NAMES)}`
+  if (used.size === 0) return `${total} available`
+  const ordered = [...used].sort((a, b) => b[1] - a[1]).map(([name, n]) => (n > 1 ? `${name} ×${n}` : name))
+  return `${total} available · used ${names(ordered, MAX_NAMES)}`
 }
 
-/** `2 connected · github ×3 (24 tools), linear (8 tools)`: the used servers first. */
+/** `2 connected · used github ×3`, or `2 connected · github, linear` while none is used. */
 export function describeMcp(inventory: CockpitInventory | null, timeline: CockpitTimeline, running: CockpitLiveTurn | null): string {
   if (inventory === null) return 'checking…'
   if (inventory.mcp.length === 0) return 'none connected'
@@ -240,11 +372,8 @@ export function describeMcp(inventory: CockpitInventory | null, timeline: Cockpi
       if (server) calls.set(server.name, (calls.get(server.name) ?? 0) + count(n))
     }
   }
-  const ordered = [...inventory.mcp]
-    .sort((a, b) => (calls.get(b.name) ?? 0) - (calls.get(a.name) ?? 0))
-    .map(server => {
-      const n = calls.get(server.name) ?? 0
-      return `${server.name}${n > 0 ? ' ×' + n : ''} (${server.tools} ${server.tools === 1 ? 'tool' : 'tools'})`
-    })
-  return `${inventory.mcp.length} connected · ${names(ordered, MAX_NAMES)}`
+  const head = `${inventory.mcp.length} connected · `
+  if (calls.size === 0) return head + names(inventory.mcp.map(server => server.name), MAX_NAMES)
+  const ordered = [...calls].sort((a, b) => b[1] - a[1]).map(([name, n]) => (n > 1 ? `${name} ×${n}` : name))
+  return head + 'used ' + names(ordered, MAX_NAMES)
 }

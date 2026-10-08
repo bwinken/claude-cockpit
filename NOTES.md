@@ -82,3 +82,31 @@ module that breaks these:
 - `$` may only be passed to a function declared at the top level of the same
   file. A closure inside `register` counts as "not a function declared at
   the top of this file".
+
+## Timeline findings (2.1.294, checked in a real session)
+
+- A prompt typed mid-turn raises `prompt.submit` with the running turn's
+  `turnId`. When the model reads it within that turn, it arrives as a
+  `session.append` row (door `delivery`, attachment `queued_command`, origin
+  `composer`) and no `turn.start` of its own. When the turn ends first, it
+  runs later as a turn, and other turns (a subagent's notification) can run
+  before it.
+- Agent calls run in the background by default (`status: async_launched`).
+  Each one reports back as a `<task-notification>` prompt (origin
+  `task-notification`). While a turn runs, it is delivered into that turn like
+  a typed prompt. Otherwise it starts a turn. Several arriving close together
+  run as one turn whose `turn.start` text carries only one of them; each one's
+  `prompt.submit` settles before that `turn.start`.
+- A subagent's `tool.call`s carry an `agentId` equal to the notification's
+  `<task-id>` and to the Agent call's `result.agentId`. The notification's
+  `<usage>` has `tool_uses` and `duration_ms`.
+- A module may register only one `tool.call` hook without a matcher; the
+  validator refuses a second. The guard and the timeline share one.
+- A plugin's own `$.tool.call` runs under a `tool_use_id` of its own, so the id
+  can't tell it from the model's. `next.origin.plugin` is `engine` for the
+  model's calls and names the plugin otherwise. The test kit's
+  `$.tool.call` reads as `engine`.
+- 2.1.292's test kit has nothing beneath `session.append` and no
+  `mock.session`, so a test there can't raise it.
+- In this cloud container, the model has none of TodoWrite or the Task tools
+  (`ToolSearch` finds none), so the plan bar is checked by tests only.
