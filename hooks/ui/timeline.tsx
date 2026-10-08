@@ -1,6 +1,7 @@
 // The timeline pane's tree: the whole session at a glance, then one line per
-// turn from #1 down, compactions marked, the running turn last. No `$` here:
-// the hook in register.tsx reads the state and passes the surface's elements in.
+// turn from #1 down (prompts typed mid-turn under their turn), compactions
+// marked, the running turn last. No `$` here: the hook in register.tsx reads
+// the state and passes the surface's elements in.
 
 import type { Elements, RenderElement, RenderSurface } from 'claude-code'
 
@@ -88,19 +89,36 @@ export function timelineTree(ui: Elements[RenderSurface], model: TimelineModel):
     </Box>
   )
 
-  // #1 at the top. Each compaction ends a segment; numbering starts again after it.
   const rows: RenderElement[] = []
+  // A prompt typed while the turn ran, on a dim line of its own under the turn.
+  const steers = (key: string, texts: readonly string[] | undefined) =>
+    (texts ?? []).forEach((text, i) =>
+      rows.push(
+        <Text key={`${key}-steer-${i}`} dimColor wrap="truncate-end">
+          {'   ↳ ' + oneLine(text, columns - 5)}
+        </Text>,
+      ),
+    )
+
+  // #1 at the top. Each compaction ends a segment; numbering starts again after it.
   timeline.compacted.forEach((section, s) => {
-    section.rows.forEach((row, i) => rows.push(line(`old-${s}-${row.turnId}`, `#${i + 1} ${row.prompt || '(no prompt)'}`, rowStats(row), true)))
+    section.rows.forEach((row, i) => {
+      rows.push(line(`old-${s}-${row.turnId}`, `#${i + 1} ${row.prompt || '(no prompt)'}`, rowStats(row), true))
+      steers(`old-${s}-${row.turnId}`, row.steers)
+    })
     rows.push(
       <Text key={'compacted-' + s} dimColor>
         ── compacted ──
       </Text>,
     )
   })
-  timeline.rows.forEach((row, i) => rows.push(line('row-' + row.turnId, `#${i + 1} ${row.prompt || '(no prompt)'}`, rowStats(row), false)))
+  timeline.rows.forEach((row, i) => {
+    rows.push(line('row-' + row.turnId, `#${i + 1} ${row.prompt || '(no prompt)'}`, rowStats(row), false))
+    steers('row-' + row.turnId, row.steers)
+  })
   if (running !== null) {
     rows.push(line('running', `▶ #${timeline.rows.length + 1} ${running.prompt || '(no prompt)'}`, roundBrief(running), false, 'claude'))
+    steers('running', running.steers)
   }
 
   return (

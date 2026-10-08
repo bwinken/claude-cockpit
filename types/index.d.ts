@@ -80,6 +80,8 @@ export type CockpitLiveTurn = {
   streaming: number | null
   tokens: CockpitTokens
   git?: CockpitGitSnapshot | null
+  /** Prompts the user typed while this turn ran, oldest first, each cut to one line. */
+  steers?: readonly string[]
 }
 
 /**
@@ -101,6 +103,8 @@ export type CockpitTurnRow = {
   durationMs: number
   isAborted: boolean
   edits: CockpitEdits | null
+  /** Prompts the user typed while the turn ran and the model read within it. */
+  steers?: readonly string[]
 }
 
 /** The turns before one compaction, folded under a header. */

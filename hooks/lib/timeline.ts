@@ -100,6 +100,27 @@ export function addRow(timeline: CockpitTimeline, row: CockpitTurnRow): CockpitT
   return trim({ ...timeline, rows: [...timeline.rows, row] })
 }
 
+/** The running turn with a prompt the user typed over it. */
+export function addSteer(live: CockpitLiveTurn | null, turnId: string, text: string): CockpitLiveTurn | null {
+  if (live === null || live.turnId !== turnId || text === '') return live
+  return { ...live, steers: [...(live.steers ?? []), text] }
+}
+
+/**
+ * The timeline as a new turn starts. A prompt typed over the last turn that
+ * the model never read there runs as this turn: it leaves that row's steers.
+ */
+export function dropRanSteers(timeline: CockpitTimeline, prompt: string): CockpitTimeline {
+  const last = timeline.rows[timeline.rows.length - 1]
+  if (last?.steers === undefined || last.steers.length === 0) return timeline
+  const ran = oneLine(prompt, Number.MAX_SAFE_INTEGER)
+  const steers = last.steers.filter(steer => !ran.includes(steer.replace(/…$/, '')))
+  if (steers.length === last.steers.length) return timeline
+  const { steers: _, ...rest } = last
+  const row = steers.length > 0 ? { ...rest, steers } : rest
+  return { ...timeline, rows: [...timeline.rows.slice(0, -1), row] }
+}
+
 /**
  * The timeline after a compaction: the turns so far fold into a compacted
  * section, nothing is dropped, and the next turn is #1 of a new segment.

@@ -3,9 +3,10 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { CockpitTurnRow } from '../types'
 import { diffSnapshots, largeId, MAX_HASH_BYTES, parseCounts, parseNumstat, snapshot } from '../hooks/lib/git'
 import type { GitRun } from '../hooks/lib/git'
-import { makeRound, skillsOf } from '../hooks/lib/rounds'
+import { makeRound, skillsOf, startTurn } from '../hooks/lib/rounds'
 import {
   addRow,
+  addSteer,
   addUsage,
   describeTokens,
   EMPTY_TIMELINE,
@@ -16,6 +17,7 @@ import {
   describeContext,
   describeMcp,
   describeSkills,
+  dropRanSteers,
   formatElapsed,
   inventoryFrom,
   inventoryFromTools,
@@ -134,6 +136,25 @@ describe('timeline helpers', () => {
     expect(timeline.compacted.map(section => section.rows.map(r => r.turnId))).toEqual([['t1', 't2']])
     // A compaction with no turn since the last one adds no empty section.
     expect(foldCompacted(timeline)).toBe(timeline)
+  })
+
+  test('keeps prompts typed mid-turn on their turn, until one runs as a turn of its own', async () => {
+    const running = addSteer(addSteer(startTurn('t1', 'fix it'), 't1', 'use pnpm'), 't1', 'and skip the e2e tests')
+    expect(running?.steers).toEqual(['use pnpm', 'and skip the e2e tests'])
+    // Another turn's id, or no turn running: nothing to add to.
+    expect(addSteer(running, 't2', 'x')).toBe(running)
+    expect(addSteer(null, 't1', 'x')).toBeNull()
+
+    const timeline = addRow(EMPTY_TIMELINE, { ...row('t1'), steers: running!.steers })
+    // The model read 'use pnpm' in t1; the other ran as the next turn.
+    const after = dropRanSteers(timeline, 'and skip the\ne2e tests')
+    expect(after.rows[0]!.steers).toEqual(['use pnpm'])
+    expect(dropRanSteers(after, 'use pnpm').rows[0]).not.toHaveProperty('steers')
+    // A turn that isn't one of them leaves the row as it is.
+    expect(dropRanSteers(timeline, 'something else')).toBe(timeline)
+    // A steer cut to PROMPT_KEPT still matches the full prompt.
+    const cut = addRow(EMPTY_TIMELINE, { ...row('t1'), steers: [oneLine('word '.repeat(100), 20)] })
+    expect(dropRanSteers(cut, 'word '.repeat(100)).rows[0]).not.toHaveProperty('steers')
   })
 
   test('keeps at most MAX_ROWS turns, the oldest going first', async () => {
@@ -344,6 +365,46 @@ describe('timeline pane', () => {
       const lines = await turnLines(ui)
       expect(lines[0]).toMatch(/^#1 run the build \| 1 call/)
       expect(lines[1]).toBe('▶ #2 read the two config files | round 1 · 2 calls')
+      await ui.unmount()
+    }
+  })
+
+  test('a prompt typed while a turn runs shows under that turn', async ($, on) => {
+    mock.clock(on)
+    on('session.usage', () => USAGE_NOW)
+    on('session.surfaces', () => ({ value: ['terminal'] }))
+    on('process.run', notGit())
+    on('turn.start', ($, e) => ({ turnId: e.turnId }))
+    on('turn.step', stepsByTurn(PLANS))
+    on('turn.complete', ($, e) => ({ text: e.answer }))
+    on('prompt.submit', ($, e) => (e.text === 'blocked' ? { drop: 'no' } : { text: e.text }))
+
+    await $.turn.start({ text: 'read the two config files', turnId: 't1' })
+    await drain($.turn.step({ turnId: 't1', index: 0, model: 'any-model', messageCount: 1 }))
+    await $.prompt.submit({ text: 'only the  yaml\none', turnId: 't1', wait: false, origin: { kind: 'composer' } })
+    // Not the person's own words, or a prompt that never entered: neither is shown.
+    await $.prompt.submit({ text: 'a peer message', turnId: 't1', wait: false, origin: { kind: 'peer' } })
+    await $.prompt.submit({ text: 'blocked', turnId: 't1', wait: false, origin: { kind: 'composer' } })
+    for (const surface of SURFACES) {
+      const ui = await $.ui.mount(pane(surface))
+      expect(await turnLines(ui)).toEqual(['▶ #1 read the two config files | round 1 · 2 calls', '↳ only the yaml one'])
+      await ui.unmount()
+    }
+
+    await drain($.turn.step({ turnId: 't1', index: 1, model: 'any-model', messageCount: 3 }))
+    await $.turn.complete({ turnId: 't1', answer: 'done', durationMs: 2_000, isAborted: false, reason: 'answer' })
+    // Typed over t2, but the turn ended first: it runs as t3 and leaves t2's row.
+    await $.turn.start({ text: 'run the build', turnId: 't2' })
+    await $.prompt.submit({ text: 'then deploy', turnId: 't2', wait: false, origin: { kind: 'composer' } })
+    await drain($.turn.step({ turnId: 't2', index: 0, model: 'any-model', messageCount: 1 }))
+    await drain($.turn.step({ turnId: 't2', index: 1, model: 'any-model', messageCount: 3 }))
+    await $.turn.complete({ turnId: 't2', answer: 'done', durationMs: 4_000, isAborted: false, reason: 'answer' })
+    await $.turn.start({ text: 'then deploy', turnId: 't3' })
+
+    for (const surface of SURFACES) {
+      const ui = await $.ui.mount(pane(surface))
+      const lines = await turnLines(ui)
+      expect(lines.map(line => line.split(' | ')[0])).toEqual(['#1 read the two config files', '↳ only the yaml one', '#2 run the build', '▶ #3 then deploy'])
       await ui.unmount()
     }
   })

@@ -34,7 +34,7 @@ A round is the set of tool calls in one model response. Subagents aren't counted
 
 ![Timeline pane docked beside the transcript](docs/images/timeline.png)
 
-A compaction draws a `── compacted ──` divider and numbering restarts. `/clear`, `/resume` and `/branch` start an empty timeline.
+A message you type while Claude is still answering shows as a dim `↳` line under the turn that read it; if the turn ends before Claude reads it, it runs as the next turn instead. A compaction draws a `── compacted ──` divider and numbering restarts. `/clear`, `/resume` and `/branch` start an empty timeline.
 
 ### Edited files band
 

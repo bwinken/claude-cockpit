@@ -10,9 +10,11 @@ import type { GitRun, StatFile } from './lib/git'
 import { beginStep, endStep, skillsOf, spinnerText, startTurn, summarize, withStreaming } from './lib/rounds'
 import {
   addRow,
+  addSteer,
   addUsage,
   describeMcp,
   describeSkills,
+  dropRanSteers,
   foldCompacted,
   inventoryFrom,
   inventoryFromTools,
@@ -288,6 +290,7 @@ export const register: Register = (on, options) => {
   if (tracksTurns) {
     // turn.start fires for the main loop only; a subagent's run raises none.
     on('turn.start', async ($, e, next) => {
+      if (config.timeline) await update($, timeline, current => dropRanSteers(current, e.text))
       await update($, live, () => startTurn(e.turnId, oneLine(e.text, PROMPT_KEPT)))
       if (config.editedFiles) {
         const git = await snapshot(gitOf($), statOf($))
@@ -295,6 +298,21 @@ export const register: Register = (on, options) => {
       }
       return next(e)
     })
+
+    // A prompt the user types while a turn runs raises no turn.start of its own
+    // when the model reads it within that turn: keep it on the running turn.
+    // One the model never reads there runs as the next turn, and leaves the row then.
+    if (config.timeline) {
+      on('prompt.submit', async ($, e, next) => {
+        const entered = await next(e)
+        const isPerson = e.origin.kind === 'composer' || e.origin.kind === 'bridge' || e.origin.kind === 'sdk'
+        if (e.turnId !== undefined && isPerson && entered.drop === undefined) {
+          const turnId = e.turnId
+          await update($, live, turn => addSteer(turn, turnId, oneLine(entered.text, PROMPT_KEPT)))
+        }
+        return entered
+      })
+    }
 
     on('turn.step', async function* ($, e, next) {
       if (e.agentId !== undefined) return yield* next(e)
@@ -371,6 +389,7 @@ export const register: Register = (on, options) => {
           durationMs: e.durationMs,
           isAborted: e.isAborted,
           edits,
+          ...(turn.steers !== undefined && turn.steers.length > 0 ? { steers: turn.steers } : {}),
         }
         await update($, timeline, current => addRow(current, row))
         // MCP servers connect and skills load as the session goes: look again after each turn.
