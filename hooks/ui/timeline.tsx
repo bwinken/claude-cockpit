@@ -7,7 +7,7 @@
 import type { Elements, RenderElement, RenderSurface } from 'claude-code'
 
 import type { CockpitAgentStats, CockpitCall, CockpitCheck, CockpitLiveTurn, CockpitPlanItem, CockpitTimeline, CockpitTurnRow } from '../../types'
-import { callTool, describeAgent, describePlan, formatAgo, planBar } from '../lib/activity'
+import { callTool, describeAgent, describeChecked, describePlan, formatAgo, planBar } from '../lib/activity'
 import { count, formatDuration, formatTally, roundBrief } from '../lib/rounds'
 import {
   describeCalls,
@@ -252,12 +252,21 @@ export function timelineTree(ui: Elements[RenderSurface], model: TimelineModel):
     }
     calls.forEach((call, i) => {
       const subject = callSubject(call, model.agentStats)
+      // A shell command that ran checks ends with how they went: `tests ✗`.
+      const checked = call.checked ? describeChecked(call.checked) : ''
       rows.push(
         <Box key={`${key}-call-${i}`} flexDirection="row">
           <Text dimColor>{indent + callTool(call).slice(0, toolWidth).padEnd(toolWidth) + '  '}</Text>
-          <Text color={call.error !== undefined ? 'error' : undefined} wrap="truncate-end">
-            {fitWidth((call.error !== undefined ? '✗ ' : '') + (subject || '—'), subjectRoom)}
-          </Text>
+          <Box flexGrow={1} flexShrink={1}>
+            <Text color={call.error !== undefined ? 'error' : undefined} wrap="truncate-end">
+              {fitWidth((call.error !== undefined ? '✗ ' : '') + (subject || '—'), subjectRoom - (checked === '' ? 0 : checked.length + 2))}
+            </Text>
+          </Box>
+          {checked === '' ? null : (
+            <Box flexShrink={0}>
+              <Text color={call.checked!.isPassing ? 'success' : 'error'}>{'  ' + checked}</Text>
+            </Box>
+          )}
         </Box>,
       )
       if (call.error !== undefined) {
