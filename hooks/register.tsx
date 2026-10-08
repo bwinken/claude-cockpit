@@ -279,6 +279,8 @@ export const register: Register = (on, options) => {
         argumentHint: '[close]',
       })
       await refreshInventory($)
+      // Unasked, the engine seats it only on a wide enough terminal; below that it waits.
+      if (config.timelineAutoOpen) await $.ui.open({ id: PANE_ID, title: PANE_TITLE })
     }
     return next(e)
   })

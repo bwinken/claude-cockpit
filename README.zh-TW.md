@@ -14,6 +14,8 @@
 
 回答 `y` 加入 marketplace，再選 user scope。cockpit 會立即生效，同一台機器上 Desktop app 開的 session 也會載入。
 
+剛開的 session 不會顯示任何東西：Claude 呼叫 tool 時才會出現 spinner 和摘要；timeline pane 要用 `/cockpit` 打開（或設定 `timelineAutoOpen` 每次自動打開）。
+
 不安裝、直接試用本機的 checkout：`claude --plugin-dir ./claude-cockpit`。
 
 ## 功能
@@ -28,7 +30,7 @@ spinner 會顯示目前第幾輪、這輪跑幾個 tool call。turn 結束時，
 
 ### Timeline pane
 
-`/cockpit` 打開一個 pane，顯示整個 session 的狀況：context 用量、turn 數、tools、skills、已連線的 MCP server、tokens、改過的檔案，接著每輪一行，從 #1 往下。`/cockpit close` 關閉。
+`/cockpit` 打開一個 pane，顯示整個 session 的狀況：context 用量、turn 數、tools、skills、已連線的 MCP server、tokens、改過的檔案，接著每輪一行，從 #1 往下。`/cockpit close` 關閉。想每次開 session 都自動打開，設定 `timelineAutoOpen`；終端機寬度不到 144 欄（自己開過一次後為 110 欄）時，pane 會等到終端機變寬或你執行 `/cockpit` 才顯示。
 
 ![停靠在對話旁的 timeline pane](docs/images/timeline.png)
 
@@ -75,6 +77,7 @@ guard 會擋下明顯具破壞性的呼叫，並告訴 Claude 該改用什麼方
 | `roundTrace` | `true` | Round 追蹤 |
 | `roundTraceMaxTools` | `5` | 摘要列出幾個 tool（1–20） |
 | `timeline` | `true` | Timeline pane 與 `/cockpit` |
+| `timelineAutoOpen` | `false` | 每次開 session 自動打開 pane |
 | `editedFiles` | `true` | Edited files 列（關閉時完全不跑 git） |
 | `gate` | `true` | Tool guard |
 | `gateAutoModePrompt` | `true` | auto mode 擋下時詢問 |
