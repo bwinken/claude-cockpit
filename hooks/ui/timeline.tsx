@@ -1,6 +1,6 @@
 // The timeline pane's tree: the whole session at a glance, then one line per
-// turn from #1 down (prompts typed mid-turn under their turn), compactions
-// marked, the running turn last. No `$` here: the hook in register.tsx reads
+// turn from #1 down (prompts typed mid-turn under their turn, a subagent's
+// notification marked ⚙), compactions marked, the running turn last. No `$` here: the hook in register.tsx reads
 // the state and passes the surface's elements in.
 
 import type { Elements, RenderElement, RenderSurface } from 'claude-code'
@@ -13,6 +13,7 @@ import {
   describeLines,
   describeTokens,
   formatElapsed,
+  NOTE_MARK,
   oneLine,
   sessionTotals,
 } from '../lib/timeline'
@@ -20,6 +21,8 @@ import {
 export type TimelineModel = {
   timeline: CockpitTimeline
   running: CockpitLiveTurn | null
+  /** Prompts typed over a turn that ended before reading them: each waits to run as a turn. */
+  queued: readonly string[]
   /** The overview's skills line: `14 · commit ×2, review-pr, +12 more`. */
   skills: string
   /** The overview's MCP line: `2 connected · github ×3 (24 tools), linear (8 tools)`. */
@@ -38,6 +41,11 @@ export function rowStats(row: CockpitTurnRow): string {
   if (row.edits !== null && row.edits.files.length > 0) parts.push(describeLines(row.edits))
   if (row.isAborted) parts.push('interrupted')
   return parts.join('  ')
+}
+
+/** A turn's prompt for its line; a subagent's notification is marked `⚙`. */
+function label(turn: { prompt: string; isNotification?: true }): string {
+  return (turn.isNotification ? NOTE_MARK : '') + (turn.prompt || '(no prompt)')
 }
 
 export function timelineTree(ui: Elements[RenderSurface], model: TimelineModel): RenderElement {
@@ -91,11 +99,11 @@ export function timelineTree(ui: Elements[RenderSurface], model: TimelineModel):
 
   const rows: RenderElement[] = []
   // A prompt typed while the turn ran, on a dim line of its own under the turn.
-  const steers = (key: string, texts: readonly string[] | undefined) =>
+  const steers = (key: string, texts: readonly string[] | undefined, note = '') =>
     (texts ?? []).forEach((text, i) =>
       rows.push(
-        <Text key={`${key}-steer-${i}`} dimColor wrap="truncate-end">
-          {'   ↳ ' + oneLine(text, columns - 5)}
+        <Text key={`${key}-${i}`} dimColor wrap="truncate-end">
+          {'   ↳ ' + oneLine(text, columns - 5 - note.length) + note}
         </Text>,
       ),
     )
@@ -103,8 +111,8 @@ export function timelineTree(ui: Elements[RenderSurface], model: TimelineModel):
   // #1 at the top. Each compaction ends a segment; numbering starts again after it.
   timeline.compacted.forEach((section, s) => {
     section.rows.forEach((row, i) => {
-      rows.push(line(`old-${s}-${row.turnId}`, `#${i + 1} ${row.prompt || '(no prompt)'}`, rowStats(row), true))
-      steers(`old-${s}-${row.turnId}`, row.steers)
+      rows.push(line(`old-${s}-${row.turnId}`, `#${i + 1} ${label(row)}`, rowStats(row), true))
+      steers(`old-${s}-${row.turnId}-steer`, row.steers)
     })
     rows.push(
       <Text key={'compacted-' + s} dimColor>
@@ -113,13 +121,21 @@ export function timelineTree(ui: Elements[RenderSurface], model: TimelineModel):
     )
   })
   timeline.rows.forEach((row, i) => {
-    rows.push(line('row-' + row.turnId, `#${i + 1} ${row.prompt || '(no prompt)'}`, rowStats(row), false))
-    steers('row-' + row.turnId, row.steers)
+    rows.push(line('row-' + row.turnId, `#${i + 1} ${label(row)}`, rowStats(row), row.isNotification === true))
+    steers(`row-${row.turnId}-steer`, row.steers)
   })
   if (running !== null) {
-    rows.push(line('running', `▶ #${timeline.rows.length + 1} ${running.prompt || '(no prompt)'}`, roundBrief(running), false, 'claude'))
-    steers('running', running.steers)
+    rows.push(line('running', `▶ #${timeline.rows.length + 1} ${label(running)}`, roundBrief(running), false, 'claude'))
+    steers('running-steer', running.steers)
+    steers('running-waiting', running.waiting, ' · not read yet')
   }
+  model.queued.forEach((text, i) =>
+    rows.push(
+      <Text key={'queued-' + i} dimColor wrap="truncate-end">
+        {'   ⋯ ' + oneLine(text, columns - 14) + ' · queued'}
+      </Text>,
+    ),
+  )
 
   return (
     <Box flexDirection="column">

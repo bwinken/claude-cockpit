@@ -34,7 +34,7 @@ spinner 會顯示目前第幾輪、這輪跑幾個 tool call。turn 結束時，
 
 ![停靠在對話旁的 timeline pane](docs/images/timeline.png)
 
-Claude 還在回覆時輸入的訊息，會以一行淡色的 `↳` 顯示在讀到它的那一輪底下；如果那一輪先結束、還沒讀到，它會變成下一輪。compact 後會畫一條 `── compacted ──` 分隔線，編號重新開始。`/clear`、`/resume`、`/branch` 會從空的 timeline 開始。
+Claude 還在回覆時輸入的訊息，會以一行淡色的 `↳` 顯示在讀到它的那一輪底下；如果那一輪先結束，它會以 `⋯ queued` 顯示，直到輪到它自己成為一輪。背景 subagent 完成時顯示為 `⚙ Agent "…" finished`：在某一輪進行中送達就放在那一輪底下，否則自成一輪（幾個同時完成會合併成一輪，標示 `+n more`）。compact 後會畫一條 `── compacted ──` 分隔線，編號重新開始。`/clear`、`/resume`、`/branch` 會從空的 timeline 開始。
 
 ### Edited files 列
 

@@ -80,8 +80,19 @@ export type CockpitLiveTurn = {
   streaming: number | null
   tokens: CockpitTokens
   git?: CockpitGitSnapshot | null
-  /** Prompts the user typed while this turn ran, oldest first, each cut to one line. */
+  /** True for a turn a background task's notification started (a subagent finishing). */
+  isNotification?: true
+  /** Prompts the user typed while this turn ran that the model has read, oldest first, each cut to one line. */
   steers?: readonly string[]
+  /** Prompts the user typed while this turn ran that the model hasn't read yet. */
+  waiting?: readonly string[]
+}
+
+/** A prompt typed over a turn that ended before reading it: it waits to run as a turn of its own. */
+export type CockpitQueued = {
+  text: string
+  /** How many turns have started since it was queued without being it. */
+  passed: number
 }
 
 /**
@@ -103,6 +114,7 @@ export type CockpitTurnRow = {
   durationMs: number
   isAborted: boolean
   edits: CockpitEdits | null
+  isNotification?: true
   /** Prompts the user typed while the turn ran and the model read within it. */
   steers?: readonly string[]
 }
@@ -143,6 +155,8 @@ declare module 'claude-code' {
       live: CockpitLiveTurn | null
       turnLines: readonly CockpitTurnLine[]
       timeline: CockpitTimeline
+      queued: readonly CockpitQueued[]
+      notes: readonly string[]
       tick: number
       inventory: CockpitInventory | null
       autoBlocks: Readonly<Record<string, CockpitAutoBlock>>

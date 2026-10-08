@@ -14,12 +14,16 @@ import {
   addUsage,
   describeMcp,
   describeSkills,
-  dropRanSteers,
   foldCompacted,
   inventoryFrom,
   inventoryFromTools,
+  NOTE_MARK,
+  noteOf,
   oneLine,
   PROMPT_KEPT,
+  promptOf,
+  readSteer,
+  startQueued,
 } from './lib/timeline'
 import {
   allowedBy,
@@ -45,6 +49,9 @@ import { timelineTree } from './ui/timeline'
 export const live = atom({ plugin: 'cockpit', key: 'live' } as const, null)
 export const turnLines = atom({ plugin: 'cockpit', key: 'turnLines' } as const, [])
 export const timeline = atom({ plugin: 'cockpit', key: 'timeline' } as const, { compacted: [], rows: [] })
+export const queued = atom({ plugin: 'cockpit', key: 'queued' } as const, [])
+/** The summaries of background tasks' notifications submitted since the last turn started. */
+const notes = atom({ plugin: 'cockpit', key: 'notes' } as const, [])
 const tick = atom({ plugin: 'cockpit', key: 'tick' } as const, 0)
 const inventory = atom({ plugin: 'cockpit', key: 'inventory' } as const, null)
 const autoBlocks = atom({ plugin: 'cockpit', key: 'autoBlocks' } as const, {})
@@ -53,6 +60,16 @@ const addedDirs = atom({ plugin: 'cockpit', key: 'addedDirs' } as const, [])
 export const lastEdits = atom({ plugin: 'cockpit', key: 'lastEdits' } as const, null)
 export const editsExpanded = atom({ plugin: 'cockpit', key: 'editsExpanded' } as const, false)
 export const editsDismissed = atom({ plugin: 'cockpit', key: 'editsDismissed' } as const, false)
+
+/** The most prompts the pane shows as queued. */
+const MAX_QUEUED = 5
+/** The most notification summaries kept for the turn that runs them. */
+const MAX_NOTES = 100
+
+/** Whether a prompt came from the person: typed, through Remote Control, or the SDK host's. */
+function isPerson(kind: string): boolean {
+  return kind === 'composer' || kind === 'bridge' || kind === 'sdk'
+}
 
 /** The timeline pane, opened by /cockpit. */
 const PANE_ID = 'cockpit-timeline'
@@ -290,8 +307,16 @@ export const register: Register = (on, options) => {
   if (tracksTurns) {
     // turn.start fires for the main loop only; a subagent's run raises none.
     on('turn.start', async ($, e, next) => {
-      if (config.timeline) await update($, timeline, current => dropRanSteers(current, e.text))
-      await update($, live, () => startTurn(e.turnId, oneLine(e.text, PROMPT_KEPT)))
+      let submitted: readonly string[] = []
+      if (config.timeline) {
+        // Notifications a turn ended without reading run with this one, if it's a notification's.
+        const late = noteOf(e.text) === null ? [] : (await read($, queued)).filter(entry => entry.text.startsWith(NOTE_MARK))
+        await update($, queued, current => (current.length === 0 ? current : startQueued(current, e.text)))
+        submitted = [...late.map(entry => entry.text.slice(NOTE_MARK.length)), ...(await read($, notes))]
+        await update($, notes, current => (current.length === 0 ? current : []))
+      }
+      const { prompt, isNotification } = promptOf(e.text, submitted)
+      await update($, live, () => ({ ...startTurn(e.turnId, oneLine(prompt, PROMPT_KEPT)), ...(isNotification ? { isNotification: true as const } : {}) }))
       if (config.editedFiles) {
         const git = await snapshot(gitOf($), statOf($))
         await update($, live, turn => (turn !== null && turn.turnId === e.turnId ? { ...turn, git } : turn))
@@ -299,18 +324,37 @@ export const register: Register = (on, options) => {
       return next(e)
     })
 
-    // A prompt the user types while a turn runs raises no turn.start of its own
-    // when the model reads it within that turn: keep it on the running turn.
-    // One the model never reads there runs as the next turn, and leaves the row then.
+    // A prompt the user types while a turn runs, or a subagent's notification
+    // that arrives then, waits on that turn. The model reads it within the turn
+    // as a delivery (no turn.start of its own); one the turn ended without
+    // reading is queued and runs as a turn later.
     if (config.timeline) {
       on('prompt.submit', async ($, e, next) => {
         const entered = await next(e)
-        const isPerson = e.origin.kind === 'composer' || e.origin.kind === 'bridge' || e.origin.kind === 'sdk'
-        if (e.turnId !== undefined && isPerson && entered.drop === undefined) {
+        if (entered.drop !== undefined) return entered
+        if (e.turnId !== undefined && isPerson(e.origin.kind)) {
           const turnId = e.turnId
           await update($, live, turn => addSteer(turn, turnId, oneLine(entered.text, PROMPT_KEPT)))
         }
+        const note = e.origin.kind === 'task-notification' ? noteOf(entered.text) : null
+        if (note !== null && e.turnId !== undefined) {
+          // A subagent finishing while a turn runs: delivered into it, as a typed prompt is.
+          const turnId = e.turnId
+          await update($, live, turn => addSteer(turn, turnId, NOTE_MARK + oneLine(note, PROMPT_KEPT)))
+        } else if (note !== null) {
+          // Several finishing close together run as one turn: count each.
+          await update($, notes, current => [...current, oneLine(note, PROMPT_KEPT)].slice(-MAX_NOTES))
+        }
         return entered
+      })
+
+      on('session.append', { door: 'delivery' }, async ($, e, next) => {
+        const stored = await next(e)
+        if (e.agentId === undefined && e.message.name === 'queued_command' && (isPerson(e.origin.kind) || e.origin.kind === 'task-notification')) {
+          const text = e.message.content.map(block => (block.type === 'text' ? block.text : '')).join('\n')
+          await update($, live, turn => readSteer(turn, text))
+        }
+        return stored
       })
     }
 
@@ -389,9 +433,12 @@ export const register: Register = (on, options) => {
           durationMs: e.durationMs,
           isAborted: e.isAborted,
           edits,
+          ...(turn.isNotification ? { isNotification: true as const } : {}),
           ...(turn.steers !== undefined && turn.steers.length > 0 ? { steers: turn.steers } : {}),
         }
         await update($, timeline, current => addRow(current, row))
+        const unread = turn.waiting ?? []
+        if (unread.length > 0) await update($, queued, current => [...current, ...unread.map(text => ({ text, passed: 0 }))].slice(-MAX_QUEUED))
         // MCP servers connect and skills load as the session goes: look again after each turn.
         await refreshInventory($)
       }
@@ -451,9 +498,11 @@ export const register: Register = (on, options) => {
       const turns = await read($, timeline)
       const running = await read($, live)
       const onHand = await read($, inventory)
+      const waiting = await read($, queued)
       return timelineTree($.ui.resolve(e), {
         timeline: turns,
         running,
+        queued: waiting.map(entry => entry.text),
         skills: describeSkills(onHand, turns, running),
         mcp: describeMcp(onHand, turns, running),
         columns: e.props.bodyColumns,

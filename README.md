@@ -34,7 +34,7 @@ A round is the set of tool calls in one model response. Subagents aren't counted
 
 ![Timeline pane docked beside the transcript](docs/images/timeline.png)
 
-A message you type while Claude is still answering shows as a dim `↳` line under the turn that read it; if the turn ends before Claude reads it, it runs as the next turn instead. A compaction draws a `── compacted ──` divider and numbering restarts. `/clear`, `/resume` and `/branch` start an empty timeline.
+A message you type while Claude is still answering shows as a dim `↳` line under the turn that read it; if the turn ends first, it shows as `⋯ queued` until it runs as a turn of its own. A background subagent finishing shows as `⚙ Agent "…" finished`: under the running turn when it arrives mid-turn, or as its own turn (`+n more` when several land together). A compaction draws a `── compacted ──` divider and numbering restarts. `/clear`, `/resume` and `/branch` start an empty timeline.
 
 ### Edited files band
 

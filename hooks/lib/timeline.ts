@@ -5,6 +5,7 @@ import type {
   CockpitInventory,
   CockpitLiveTurn,
   CockpitMcpServer,
+  CockpitQueued,
   CockpitRound,
   CockpitTimeline,
   CockpitTokens,
@@ -100,25 +101,71 @@ export function addRow(timeline: CockpitTimeline, row: CockpitTurnRow): CockpitT
   return trim({ ...timeline, rows: [...timeline.rows, row] })
 }
 
-/** The running turn with a prompt the user typed over it. */
+/** The running turn with a prompt the user typed over it, not read yet. */
 export function addSteer(live: CockpitLiveTurn | null, turnId: string, text: string): CockpitLiveTurn | null {
   if (live === null || live.turnId !== turnId || text === '') return live
-  return { ...live, steers: [...(live.steers ?? []), text] }
+  return { ...live, waiting: [...(live.waiting ?? []), text] }
+}
+
+/** What marks a background task's notification among a turn's prompts. */
+export const NOTE_MARK = '⚙ '
+
+/** Whether `text` holds `prompt`, as cut to one line (a trailing `…` and a NOTE_MARK ignored). */
+function holds(text: string, prompt: string): boolean {
+  const bare = (prompt.startsWith(NOTE_MARK) ? prompt.slice(NOTE_MARK.length) : prompt).replace(/…$/, '')
+  return oneLine(text, Number.MAX_SAFE_INTEGER).includes(bare)
 }
 
 /**
- * The timeline as a new turn starts. A prompt typed over the last turn that
- * the model never read there runs as this turn: it leaves that row's steers.
+ * The running turn once the model is handed a prompt typed over it, or a
+ * notification delivered into it (`text` is the delivery as the model reads
+ * it): that one, or the oldest waiting of its kind when none matches, moves
+ * from waiting to read.
  */
-export function dropRanSteers(timeline: CockpitTimeline, prompt: string): CockpitTimeline {
-  const last = timeline.rows[timeline.rows.length - 1]
-  if (last?.steers === undefined || last.steers.length === 0) return timeline
-  const ran = oneLine(prompt, Number.MAX_SAFE_INTEGER)
-  const steers = last.steers.filter(steer => !ran.includes(steer.replace(/…$/, '')))
-  if (steers.length === last.steers.length) return timeline
-  const { steers: _, ...rest } = last
-  const row = steers.length > 0 ? { ...rest, steers } : rest
-  return { ...timeline, rows: [...timeline.rows.slice(0, -1), row] }
+export function readSteer(live: CockpitLiveTurn | null, text: string): CockpitLiveTurn | null {
+  const waiting = live?.waiting ?? []
+  if (live === null || waiting.length === 0) return live
+  const isNote = text.includes('<task-notification>')
+  const found = waiting.findIndex(prompt => holds(text, prompt))
+  const at = found >= 0 ? found : waiting.findIndex(prompt => prompt.startsWith(NOTE_MARK) === isNote)
+  if (at < 0) return live
+  return { ...live, steers: [...(live.steers ?? []), waiting[at]!], waiting: waiting.filter((_, i) => i !== at) }
+}
+
+/** How many turns a queued prompt may see start before it's let go. */
+export const QUEUED_TURNS = 3
+
+/**
+ * The queued prompts as a turn starts: the ones the turn runs leave (every
+ * queued notification, when a notification starts it: the engine runs them
+ * together), the rest count the turn, and one that has seen QUEUED_TURNS go
+ * by is let go.
+ */
+export function startQueued(queued: readonly CockpitQueued[], prompt: string): CockpitQueued[] {
+  const isNote = noteOf(prompt) !== null
+  return queued
+    .filter(entry => !holds(prompt, entry.text) && !(isNote && entry.text.startsWith(NOTE_MARK)))
+    .map(entry => ({ ...entry, passed: entry.passed + 1 }))
+    .filter(entry => entry.passed < QUEUED_TURNS)
+}
+
+/** A background task's notification as its summary (`Agent "x" finished`); null for any other prompt. */
+export function noteOf(text: string): string | null {
+  if (!text.trimStart().startsWith('<task-notification>')) return null
+  return /<summary>([\s\S]*?)<\/summary>/.exec(text)?.[1]?.trim() || 'Background task finished'
+}
+
+/**
+ * The prompt a turn shows. A turn background tasks' notifications start (a
+ * subagent finishing) reads as the first one's summary, and `+n more` when
+ * the engine ran several as one turn: `notes`, as each was submitted.
+ */
+export function promptOf(text: string, notes: readonly string[] = []): { prompt: string; isNotification: boolean } {
+  const own = noteOf(text)
+  if (own === null) return { prompt: text, isNotification: false }
+  const all = notes.length > 0 ? notes : [own]
+  const count = Math.max(all.length, (text.match(/<task-notification>/g) ?? []).length)
+  return { prompt: all[0]! + (count > 1 ? ` +${count - 1} more` : ''), isNotification: true }
 }
 
 /**
