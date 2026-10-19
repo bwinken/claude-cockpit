@@ -16,6 +16,7 @@ import {
 import { appendAudit, auditLine } from './lib/audit'
 import type { AuditEntry } from './lib/audit'
 import { stubClassifier } from './lib/classifier'
+import { contextMapFrom } from './lib/context'
 import { readConfig } from './lib/config'
 import { diffSnapshots, snapshot } from './lib/git'
 import type { GitRun, StatFile } from './lib/git'
@@ -72,6 +73,14 @@ const planExpanded = atom({ plugin: 'cockpit', key: 'planExpanded' } as const, f
 const agentStats = atom({ plugin: 'cockpit', key: 'agentStats' } as const, {})
 const tick = atom({ plugin: 'cockpit', key: 'tick' } as const, 0)
 const inventory = atom({ plugin: 'cockpit', key: 'inventory' } as const, null)
+/**
+ * The context window by category: `contextMap` from the local estimate (whose
+ * window and compaction buffer the pane's bar reads), `contextDetail` counted
+ * as /context counts it, read only while the pane shows the grid.
+ */
+const contextMap = atom({ plugin: 'cockpit', key: 'contextMap' } as const, null)
+const contextDetail = atom({ plugin: 'cockpit', key: 'contextDetail' } as const, null)
+const contextExpanded = atom({ plugin: 'cockpit', key: 'contextExpanded' } as const, false)
 const autoBlocks = atom({ plugin: 'cockpit', key: 'autoBlocks' } as const, {})
 const approvals = atom({ plugin: 'cockpit', key: 'approvals' } as const, [])
 const addedDirs = atom({ plugin: 'cockpit', key: 'addedDirs' } as const, [])
@@ -171,9 +180,10 @@ async function isTerminalOnly($: EngineInterface): Promise<boolean> {
 }
 
 /**
- * Re-reads the skills listed for the model and the connected MCP servers.
- * The breakdown is counted locally (`summary`, no request is sent); where
- * there is none, the tool list gives the servers and no skills.
+ * Re-reads the skills listed for the model, the connected MCP servers and the
+ * context window by category. The breakdown is counted locally (`summary`, no
+ * request is sent); where there is none, the tool list gives the servers and
+ * no skills, and the pane draws no grid.
  */
 async function refreshInventory($: EngineInterface): Promise<void> {
   try {
@@ -182,6 +192,8 @@ async function refreshInventory($: EngineInterface): Promise<void> {
     if (breakdown !== undefined) {
       const found = inventoryFrom(breakdown.skills?.skillFrontmatter, breakdown.mcpTools)
       await update($, inventory, () => found)
+      const map = contextMapFrom(breakdown)
+      await update($, contextMap, () => map)
       return
     }
   } catch {
@@ -192,6 +204,21 @@ async function refreshInventory($: EngineInterface): Promise<void> {
     await update($, inventory, () => found)
   } catch {
     // Nothing to read: the overview keeps what it had.
+  }
+}
+
+/**
+ * Counts the context window by category as /context does (`full`: a
+ * token-count request per tool and memory file), for the pane's grid. The
+ * local estimate leaves out the conversation itself, so the grid can't use it.
+ */
+async function refreshContextDetail($: EngineInterface): Promise<void> {
+  try {
+    const usage = await $.session.usage({ breakdown: 'full' })
+    const map = contextMapFrom(usage.context.breakdown)
+    await update($, contextDetail, () => map)
+  } catch {
+    // Nothing counted: the grid keeps what it had.
   }
 }
 
@@ -522,6 +549,7 @@ export const register: Register = (on, options) => {
         if (unread.length > 0) await update($, queued, current => [...current, ...unread.map(text => ({ text, passed: 0 }))].slice(-MAX_QUEUED))
         // MCP servers connect and skills load as the session goes: look again after each turn.
         await refreshInventory($)
+        if (await read($, contextExpanded)) await refreshContextDetail($)
       }
       return reply
     })
@@ -593,6 +621,13 @@ export const register: Register = (on, options) => {
         checks: await read($, checks),
         plan: await read($, plan),
         isPlanExpanded: await read($, planExpanded),
+        contextMap: await read($, contextMap),
+        contextDetail: await read($, contextDetail),
+        isContextExpanded: await read($, contextExpanded),
+        onToggleContext: async () => {
+          const isShown = await update($, contextExpanded, shown => !shown)
+          if (isShown) await refreshContextDetail($)
+        },
         expandedTurn: await read($, expandedTurn),
         agentStats: await read($, agentStats),
         now,
@@ -616,6 +651,9 @@ export const register: Register = (on, options) => {
     // A compaction keeps $.state: fold this segment's turns, then count afresh.
     on('classic.SessionStart', { source: 'compact' }, async ($, e, next) => {
       await update($, timeline, current => foldCompacted(current))
+      // The window was just emptied: break it down again.
+      await refreshInventory($)
+      if (await read($, contextExpanded)) await refreshContextDetail($)
       return next(e)
     })
   }

@@ -110,3 +110,15 @@ module that breaks these:
   `mock.session`, so a test there can't raise it.
 - In this cloud container, the model has none of TodoWrite or the Task tools
   (`ToolSearch` finds none), so the plan bar is checked by tests only.
+
+## Context breakdown findings (2.1.303, checked in a real session)
+
+- `$.session.usage({ breakdown: 'summary' })` has no row for the
+  conversation: its categories are the system prompt, tools, skills, free
+  space and the autocompact buffer, and its tool estimate runs high (35.1k
+  where `/context` counted 22.6k). The rows sum close to the live figure
+  only by chance. `breakdown: 'full'` matches `/context` row for row, the
+  `Messages` row included, and its total equals `context.tokens`. So the
+  pane's grid reads `full`, and only while it's open, since `full` sends a
+  token-count request per tool and memory file. The bar reads the live
+  figure and `summary`'s window and buffer, which `summary` gets right.

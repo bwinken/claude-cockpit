@@ -36,6 +36,10 @@ spinner 會顯示目前第幾輪、這輪跑幾個 tool call。turn 結束時，
 
 每輪一行：prompt、呼叫數、時間、改動行數，有呼叫失敗（出錯、非零退出、被擋下）時標 `✗ n`。點一下某一輪，會在底下列出它的每個呼叫，失敗的用紅字並附上 Claude 讀到的錯誤；跑了檢查的指令會標出結果（`tests ✗`），最後是它改過的檔案。
 
+- **context**：一條代表 context window 的格子，`■□□□…□▨ 4% of 1M (38.4k)`：已用、剩餘，以及 autocompact buffer。點一下展開 `/context` 的格狀圖，每格代表 window 的 1%，旁邊列出各類別的 token 數（system prompt、工具、memory 檔、skills、訊息、剩餘空間、buffer）。格狀圖的算法跟 `/context` 一樣，每個工具和 memory 檔各送一次 token 計數請求，所以只在展開時計算：展開的當下，以及之後每個 turn 結束時。
+
+  ![展開的 context：/context 的格狀圖，旁邊是各類別的 token 數](docs/images/context.png)
+
 - **checks**：每種檢查最近一次的結果，Claude 或 subagent 跑的都算：`tests ✗ 2m ago · lint ✓ just now`。依 shell 指令內容判斷種類（`npm test`、`pytest`、`cargo clippy`、`tsc`、`npm run build` 等）；非零退出或輸出顯示失敗就算失敗。
 - **plan**：Claude 用 task 工具（TodoWrite，或 TaskCreate／TaskUpdate）列的步驟，畫成一條格子 `■■■□□ 3/5 · Running tests`：完成、進行中、待做。點一下列出各步驟。
 - **skills** 和 **mcp** 只列有用到的。

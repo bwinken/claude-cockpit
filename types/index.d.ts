@@ -186,6 +186,29 @@ export type CockpitTimeline = {
   rows: readonly CockpitTurnRow[]
 }
 
+/** One row of the context breakdown inside the window, as /context lists it beside its grid. */
+export type CockpitContextCategory = {
+  /** The row's label as /context prints it (`System prompt`, `Messages`, `Free space`). */
+  name: string
+  tokens: number
+  /** The theme colour /context draws the row in, by its key (`promptBorder`, `inactive`). */
+  color: string
+  /** `used` occupies the window, `free` is the window left, `buffer` the compaction reserve. */
+  kind: 'used' | 'free' | 'buffer'
+}
+
+/** The context window by category, from one breakdown. */
+export type CockpitContextMap = {
+  categories: readonly CockpitContextCategory[]
+  /** The window measured against, in tokens: the model's, or a smaller compaction window. */
+  window: number
+  /** Tokens in use, as the breakdown estimates them. */
+  used: number
+  percent: number
+  /** The model the breakdown was computed for; '' when it didn't say. */
+  model: string
+}
+
 /** A tool call auto mode blocked, kept until the guard's `tool.call` hook sees the call come back refused. */
 export type CockpitAutoBlock = {
   tool: string
@@ -219,6 +242,9 @@ declare module 'claude-code' {
       agentStats: Readonly<Record<string, CockpitAgentStats>>
       tick: number
       inventory: CockpitInventory | null
+      contextMap: CockpitContextMap | null
+      contextDetail: CockpitContextMap | null
+      contextExpanded: boolean
       autoBlocks: Readonly<Record<string, CockpitAutoBlock>>
       approvals: readonly CockpitApproval[]
       addedDirs: readonly string[]
