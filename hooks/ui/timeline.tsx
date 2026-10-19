@@ -6,8 +6,18 @@
 
 import type { Elements, RenderElement, RenderSurface } from 'claude-code'
 
-import type { CockpitAgentStats, CockpitCall, CockpitCheck, CockpitLiveTurn, CockpitPlanItem, CockpitTimeline, CockpitTurnRow } from '../../types'
+import type {
+  CockpitAgentStats,
+  CockpitCall,
+  CockpitCheck,
+  CockpitContextMap,
+  CockpitLiveTurn,
+  CockpitPlanItem,
+  CockpitTimeline,
+  CockpitTurnRow,
+} from '../../types'
 import { callTool, describeAgent, describeChecked, describePlan, formatAgo, planBar } from '../lib/activity'
+import { BAR_CELLS, contextBar, contextGrid, describeCategory, describeContextMap, GRID_WIDTH, legendGlyph } from '../lib/context'
 import { count, formatDuration, formatTally, roundBrief } from '../lib/rounds'
 import {
   describeCalls,
@@ -37,6 +47,9 @@ export type TimelineModel = {
   elapsedMs?: number
   /** The context window's fill, as `$.session.usage()` reports it. */
   context?: { tokens?: number; window?: number; percent?: number }
+  /** The window by category, as /context breaks it down; absent, no bar or grid. */
+  contextMap?: CockpitContextMap | null
+  isContextExpanded?: boolean
   /** The last run of each kind of check; none, and the line is left out. */
   checks?: readonly CockpitCheck[]
   /** The model's plan; empty, and the line is left out. */
@@ -50,6 +63,7 @@ export type TimelineModel = {
   now?: number
   onToggleTurn?: (turnId: string) => unknown
   onTogglePlan?: () => unknown
+  onToggleContext?: () => unknown
 }
 
 /** The width of a row's calls column (`12 calls`), and of its time column (`1m 05s`). */
@@ -109,7 +123,7 @@ export function timelineTree(ui: Elements[RenderSurface], model: TimelineModel):
     <Text key="title" bold>
       {'Session' + (model.elapsedMs === undefined ? '' : ' · running ' + formatElapsed(model.elapsedMs))}
     </Text>,
-    field('context', 'context', describeContext(model.context)),
+    ...contextRows(ui, model, columns, field),
     field(
       'turns',
       'turns',
@@ -361,4 +375,116 @@ function callSubject(call: CockpitCall, stats: Readonly<Record<string, CockpitAg
   if (seen === undefined) return call.subject
   const detail = describeAgent(seen.calls, undefined, seen.failed)
   return detail === '' ? call.subject : call.subject + ' · ' + detail
+}
+
+/** Where the legend goes beside the grid: it needs this many columns, or it goes under the grid. */
+const LEGEND_MIN = 24
+
+/**
+ * The overview's context line: the window as a bar of its categories, then
+ * the figures; pressed, the grid /context draws, with its legend beside it.
+ * Without a breakdown, the figures alone.
+ */
+function contextRows(
+  ui: Elements[RenderSurface],
+  model: TimelineModel,
+  columns: number,
+  field: (key: string, label: string, value: string | RenderElement) => RenderElement,
+): RenderElement[] {
+  const { Box, Button, Text } = ui
+  const figures = describeContext(model.context)
+  const map = model.contextMap
+  if (map === undefined || map === null) return [field('context', 'context', figures)]
+
+  const tint = (category: number) => {
+    const row = map.categories[category]
+    return { color: row?.color, dimColor: row === undefined || row.kind !== 'used' }
+  }
+  const rows: RenderElement[] = [
+    field(
+      'context',
+      'context',
+      <Box flexDirection="row" gap={1}>
+        <Box flexDirection="row" flexShrink={0}>
+          {contextBar(map, BAR_CELLS).map((run, i) => (
+            <Text key={'bar-' + i} {...tint(run.category)}>
+              {(run.category === -1 || map.categories[run.category]!.kind !== 'used' ? '□' : '■').repeat(run.cells)}
+            </Text>
+          ))}
+        </Box>
+        <Button key="context-toggle" plain label={fitWidth(figures, columns - 13 - BAR_CELLS - 1)} onPress={() => model.onToggleContext?.()} />
+      </Box>,
+    ),
+  ]
+  if (!model.isContextExpanded) return rows
+
+  const indent = ' '.repeat(13)
+  // ⛁ ⛁ ⛀ ⛶ …: a square each 1% of the window, runs of one category in one Text.
+  const grid = contextGrid(map).map((squares, r) => {
+    const runs: Array<{ category: number; glyphs: string[] }> = []
+    for (const square of squares) {
+      const last = runs[runs.length - 1]
+      if (last !== undefined && last.category === square.category) last.glyphs.push(square.glyph)
+      else runs.push({ category: square.category, glyphs: [square.glyph] })
+    }
+    return (
+      <Box key={'grid-' + r} flexDirection="row" flexShrink={0}>
+        {runs.map((run, i) => (
+          <Text key={`grid-${r}-${i}`} {...tint(run.category)}>
+            {(i > 0 ? ' ' : '') + run.glyphs.join(' ')}
+          </Text>
+        ))}
+      </Box>
+    )
+  })
+
+  const shown = map.categories.filter(category => category.tokens > 0)
+  const gridWidth = GRID_WIDTH * 2 - 1
+  const isBeside = columns - 13 - gridWidth - 3 >= LEGEND_MIN
+  const legendRoom = isBeside ? columns - 13 - gridWidth - 3 : columns - 13
+  const nameWidth = Math.min(Math.max(...shown.map(category => category.name.length), 4), Math.max(4, legendRoom - 16))
+  const legend: RenderElement[] = [
+    <Box key="legend-head">
+      <Text dimColor wrap="truncate-end">
+        {fitWidth(describeContextMap(map), legendRoom)}
+      </Text>
+    </Box>,
+    ...shown.map((category, i) => (
+      <Box key={'legend-' + i} flexDirection="row">
+        <Text color={category.color} dimColor={category.kind !== 'used'}>
+          {legendGlyph(category) + ' '}
+        </Text>
+        <Text wrap="truncate-end">{fitWidth(category.name, nameWidth).padEnd(nameWidth) + ' '}</Text>
+        <Text dimColor>{describeCategory(map, category)}</Text>
+      </Box>
+    )),
+  ]
+
+  if (isBeside) {
+    const height = Math.max(grid.length, legend.length)
+    for (let i = 0; i < height; i++) {
+      rows.push(
+        <Box key={'context-' + i} flexDirection="row">
+          <Text>{indent}</Text>
+          <Box width={gridWidth + 3} flexShrink={0}>
+            {grid[i] ?? <Text> </Text>}
+          </Box>
+          <Box flexGrow={1} flexShrink={1}>
+            {legend[i] ?? <Text> </Text>}
+          </Box>
+        </Box>,
+      )
+    }
+  } else {
+    // Too narrow for both side by side: the legend under the grid.
+    ;[...grid, ...legend].forEach((element, i) =>
+      rows.push(
+        <Box key={'context-' + i} flexDirection="row">
+          <Text>{indent}</Text>
+          {element}
+        </Box>,
+      ),
+    )
+  }
+  return rows
 }

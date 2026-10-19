@@ -16,6 +16,7 @@ import {
 import { appendAudit, auditLine } from './lib/audit'
 import type { AuditEntry } from './lib/audit'
 import { stubClassifier } from './lib/classifier'
+import { contextMapFrom } from './lib/context'
 import { readConfig } from './lib/config'
 import { diffSnapshots, snapshot } from './lib/git'
 import type { GitRun, StatFile } from './lib/git'
@@ -72,6 +73,9 @@ const planExpanded = atom({ plugin: 'cockpit', key: 'planExpanded' } as const, f
 const agentStats = atom({ plugin: 'cockpit', key: 'agentStats' } as const, {})
 const tick = atom({ plugin: 'cockpit', key: 'tick' } as const, 0)
 const inventory = atom({ plugin: 'cockpit', key: 'inventory' } as const, null)
+/** The context window by category, from the last breakdown read; null before one. */
+const contextMap = atom({ plugin: 'cockpit', key: 'contextMap' } as const, null)
+const contextExpanded = atom({ plugin: 'cockpit', key: 'contextExpanded' } as const, false)
 const autoBlocks = atom({ plugin: 'cockpit', key: 'autoBlocks' } as const, {})
 const approvals = atom({ plugin: 'cockpit', key: 'approvals' } as const, [])
 const addedDirs = atom({ plugin: 'cockpit', key: 'addedDirs' } as const, [])
@@ -171,9 +175,10 @@ async function isTerminalOnly($: EngineInterface): Promise<boolean> {
 }
 
 /**
- * Re-reads the skills listed for the model and the connected MCP servers.
- * The breakdown is counted locally (`summary`, no request is sent); where
- * there is none, the tool list gives the servers and no skills.
+ * Re-reads the skills listed for the model, the connected MCP servers and the
+ * context window by category. The breakdown is counted locally (`summary`, no
+ * request is sent); where there is none, the tool list gives the servers and
+ * no skills, and the pane draws no grid.
  */
 async function refreshInventory($: EngineInterface): Promise<void> {
   try {
@@ -182,6 +187,8 @@ async function refreshInventory($: EngineInterface): Promise<void> {
     if (breakdown !== undefined) {
       const found = inventoryFrom(breakdown.skills?.skillFrontmatter, breakdown.mcpTools)
       await update($, inventory, () => found)
+      const map = contextMapFrom(breakdown)
+      await update($, contextMap, () => map)
       return
     }
   } catch {
@@ -593,6 +600,9 @@ export const register: Register = (on, options) => {
         checks: await read($, checks),
         plan: await read($, plan),
         isPlanExpanded: await read($, planExpanded),
+        contextMap: await read($, contextMap),
+        isContextExpanded: await read($, contextExpanded),
+        onToggleContext: () => update($, contextExpanded, shown => !shown),
         expandedTurn: await read($, expandedTurn),
         agentStats: await read($, agentStats),
         now,
@@ -616,6 +626,8 @@ export const register: Register = (on, options) => {
     // A compaction keeps $.state: fold this segment's turns, then count afresh.
     on('classic.SessionStart', { source: 'compact' }, async ($, e, next) => {
       await update($, timeline, current => foldCompacted(current))
+      // The window was just emptied: break it down again.
+      await refreshInventory($)
       return next(e)
     })
   }
