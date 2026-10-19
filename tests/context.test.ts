@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import { contextBar, contextGrid, contextMapFrom, describeCategory, describeContextMap } from '../hooks/lib/context'
+import { contextGrid, contextMapFrom, describeCategory, describeContextMap, usageBar } from '../hooks/lib/context'
 import { pane, SURFACES } from './helpers'
 
 /** A breakdown as `$.session.usage({ breakdown })` hands it back: only the fields cockpit reads. */
@@ -11,8 +11,8 @@ const BREAKDOWN = {
     { name: 'Messages', tokens: 25_000, color: 'permission', isDeferred: false, kind: 'used' },
     { name: 'MCP tools', tokens: 5_000, color: 'cyan', isDeferred: true, kind: 'deferred' },
     { name: 'Skills', tokens: 0, color: 'warning', isDeferred: false, kind: 'used' },
-    { name: 'Free space', tokens: 115_000, color: 'promptBorder', isDeferred: false, kind: 'free' },
     { name: 'Autocompact buffer', tokens: 45_000, color: 'inactive', isDeferred: false, kind: 'buffer' },
+    { name: 'Free space', tokens: 115_000, color: 'promptBorder', isDeferred: false, kind: 'free' },
   ],
   totalTokens: 40_000,
   maxTokens: 200_000,
@@ -45,7 +45,7 @@ function texts(node: unknown): string[] {
 describe('context map', () => {
   test('keeps the rows inside the window, and the window measured against', () => {
     const map = contextMapFrom(BREAKDOWN)!
-    expect(map.categories.map(c => c.name)).toEqual(['System prompt', 'System tools', 'Messages', 'Skills', 'Free space', 'Autocompact buffer'])
+    expect(map.categories.map(c => c.name)).toEqual(['System prompt', 'System tools', 'Messages', 'Skills', 'Autocompact buffer', 'Free space'])
     expect(map.window).toBe(200_000)
     expect(describeContextMap(map)).toBe('claude-opus · 40k/200k tokens (20%)')
     expect(describeCategory(map, map.categories[0]!)).toBe('3k (1.5%)')
@@ -70,43 +70,51 @@ describe('context map', () => {
     expect(flat.endsWith('⛝')).toBe(true)
   })
 
-  test('the bar: runs of one category, as wide as asked', () => {
+  test('the bar: used, the window left, the compaction buffer, to the breakdown\'s window', () => {
     const map = contextMapFrom(BREAKDOWN)!
-    expect(contextBar(map, 20)).toEqual([
-      { category: 0, cells: 1 },
-      { category: 1, cells: 1 },
-      { category: 2, cells: 3 },
-      { category: 4, cells: 10 },
-      { category: 5, cells: 5 },
+    // The live figure wins over the estimate: 40k of 200k is 4 cells, the 45k buffer 4.5.
+    expect(usageBar(map, { tokens: 40_000 }, 20)).toEqual([
+      { kind: 'used', cells: 4 },
+      { kind: 'free', cells: 11 },
+      { kind: 'buffer', cells: 5 },
     ])
-    // Over the window: the used rows still fit, a cell each at least, and nothing is free.
-    const full = contextMapFrom({ ...BREAKDOWN, categories: [{ name: 'Messages', tokens: 300_000, color: 'x', kind: 'used' }, { name: 'Prompt', tokens: 10, color: 'y', kind: 'used' }] })!
-    const bar = contextBar(full, 20)
-    expect(bar.reduce((sum, run) => sum + run.cells, 0)).toBe(20)
-    expect(bar).toEqual([
-      { category: 0, cells: 19 },
-      { category: 1, cells: 1 },
+    // Before the first response, the estimate; a little used still shows.
+    expect(usageBar({ ...map, used: 1_000 }, {}, 20)[0]).toEqual({ kind: 'used', cells: 1 })
+    // Over the window: what's used fills what the buffer leaves.
+    expect(usageBar(map, { tokens: 900_000 }, 20)).toEqual([
+      { kind: 'used', cells: 15 },
+      { kind: 'buffer', cells: 5 },
     ])
   })
+
 })
 
 describe('timeline pane context', () => {
-  test('a bar of the categories by the figures; pressed, the grid with its legend', async ($, on) => {
+  test('a bar by the figures; pressed, the grid with its legend, counted as /context counts it', async ($, on) => {
     mock.clock(on)
-    on('session.usage', () => USAGE)
+    const asked: unknown[] = []
+    on('session.usage', ($, e) => {
+      asked.push(e?.breakdown)
+      return USAGE
+    })
     on('classic.SessionStart', () => ({}))
     await $.classic.SessionStart({ source: 'clear' })
 
     for (const surface of SURFACES) {
+      asked.length = 0
       const ui = await $.ui.mount(pane(surface))
-      expect(texts(await ui.find({ key: 'context' })).join('')).toBe('  context' + '■■■■■' + '□'.repeat(15) + '20% of 200k (40k)')
+      expect(texts(await ui.find({ key: 'context' })).join('')).toBe('  context' + '■■■■' + '□'.repeat(11) + '▨'.repeat(5) + '20% of 200k (40k)')
       expect(await ui.find({ key: 'grid-0' })).toBeUndefined()
+      // Only the free local estimate so far: nothing is counted with the API until the grid is asked for.
+      expect(asked).not.toContain('full')
 
       await ui.press({ key: 'context-toggle' })
+      expect(asked).toContain('full')
       expect(texts(await ui.find({ key: 'grid-0' })).join('')).toBe('⛁ ⛀ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁')
       expect(texts(await ui.find({ key: 'legend-head' })).join('')).toBe('claude-opus · 40k/200k tokens (20%)')
       const legend = []
       for (let i = 0; i < 5; i++) legend.push(texts(await ui.find({ key: 'legend-' + i })).join('').replace(/ +/g, ' '))
+      // In the grid's order, used, free, then buffer, whatever the breakdown's.
       expect(legend).toEqual([
         '⛁ System prompt 3k (1.5%)',
         '⛁ System tools 12k (6%)',

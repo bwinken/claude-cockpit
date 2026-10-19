@@ -36,7 +36,10 @@ A round is the set of tool calls in one model response. Subagents aren't counted
 
 Each turn is one line: its prompt, calls, time, lines changed and `✗ n` for calls that failed (an error, a non-zero exit, a blocked call). Press a turn to list its calls under it, failures in red with the error Claude read, a command that ran checks with how they went (`tests ✗`), then the files it edited.
 
-- **context**: the window split by category as `/context` splits it (system prompt, tools, memory files, messages, free space, the autocompact buffer), as a bar beside the figures: `■■■■□□□□□□□□□□□□□□□□ 20% of 200k (40k)`. Press it for `/context`'s grid, a square for each 1% of the window, with each category's tokens beside it. The categories are counted locally (no request is sent) at the start, after each turn and after a compaction.
+- **context**: a bar of the window, `■□□□…□▨ 4% of 1M (38.4k)`: what's used, what's left, and the autocompact buffer. Press it for `/context`'s grid, a square for each 1% of the window, beside each category's tokens (system prompt, tools, memory files, skills, messages, free space, the buffer). The grid is counted as `/context` counts it, with a token-count request per tool and memory file, so it's counted only while it's open: when you open it and after each turn.
+
+  ![The context line pressed open: /context's grid beside each category's tokens](docs/images/context.png)
+
 - **checks**: the last run of each kind of check, by Claude or a subagent: `tests ✗ 2m ago · lint ✓ just now`. A shell command counts as one by what it runs (`npm test`, `pytest`, `cargo clippy`, `tsc`, `npm run build`, …); it failed when it exited non-zero or its output says so.
 - **plan**: the steps Claude keeps with its task tools (TodoWrite, or TaskCreate and TaskUpdate) as a bar, `■■■□□ 3/5 · Running tests`: done, running, waiting. Press it to list the steps.
 - **skills** and **mcp** name only what was used.

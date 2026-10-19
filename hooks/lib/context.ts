@@ -55,24 +55,20 @@ export type ContextSquare = { category: number; glyph: string }
 
 /**
  * Each category's share of `cells`: the used rows first, in their order, then
- * the free space, the compaction buffer last. A used row with any tokens keeps
- * at least one cell; the free space gives way first when they overflow.
- * `fullness` is how full the row's last cell is, 0 to 1.
+ * the free space, the compaction buffer last. A used row with any tokens
+ * keeps at least one cell, as /context's grid keeps it; the free space gives
+ * way first when they overflow. `fullness` is how full the row's last cell
+ * is, 0 to 1.
  */
 function shares(map: CockpitContextMap, cells: number): Array<{ category: number; cells: number; fullness: number }> {
   const exact = (tokens: number) => (tokens / map.window) * cells
   const out: Array<{ category: number; cells: number; fullness: number }> = []
-  const order = [
-    ...map.categories.flatMap((c, i) => (c.kind === 'used' ? [i] : [])),
-    ...map.categories.flatMap((c, i) => (c.kind === 'free' ? [i] : [])),
-    ...map.categories.flatMap((c, i) => (c.kind === 'buffer' ? [i] : [])),
-  ]
   let taken = 0
-  for (const i of order) {
+  for (const i of gridOrder(map)) {
     const c = map.categories[i]!
     if (c.kind === 'free') continue
     const e = exact(c.tokens)
-    const n = c.tokens === 0 ? 0 : Math.max(1, Math.round(e))
+    const n = c.tokens === 0 ? 0 : Math.max(c.kind === 'used' ? 1 : 0, Math.round(e))
     const fullness = n === 0 ? 0 : Math.min(1, Math.max(0, e - (n - 1)))
     out.push({ category: i, cells: n, fullness })
     taken += n
@@ -117,9 +113,32 @@ export function contextGrid(map: CockpitContextMap, width = GRID_WIDTH, height =
   return rows
 }
 
-/** The one-line bar: runs of one category, `cells` wide in all, used first, free, then buffer. */
-export function contextBar(map: CockpitContextMap, cells = BAR_CELLS): Array<{ category: number; cells: number }> {
-  return shares(map, cells).map(({ category, cells }) => ({ category, cells }))
+/**
+ * The one-line bar, `cells` wide: what's used, the window left, the
+ * compaction reserve. What's used is the live figure (the last response's
+ * input) where there is one, the breakdown's estimate otherwise; the window
+ * and the reserve are the breakdown's. Anything used shows as a cell at least.
+ */
+export function usageBar(
+  map: CockpitContextMap,
+  context: { tokens?: number } | undefined,
+  cells = BAR_CELLS,
+): Array<{ kind: 'used' | 'free' | 'buffer'; cells: number }> {
+  const scaled = (tokens: number) => Math.round((tokens / map.window) * cells)
+  const tokens = context?.tokens ?? map.used
+  const buffer = Math.min(cells, scaled(map.categories.filter(c => c.kind === 'buffer').reduce((sum, c) => sum + c.tokens, 0)))
+  const used = Math.min(cells - buffer, tokens > 0 ? Math.max(1, scaled(tokens)) : 0)
+  const runs = [
+    { kind: 'used' as const, cells: used },
+    { kind: 'free' as const, cells: cells - buffer - used },
+    { kind: 'buffer' as const, cells: buffer },
+  ]
+  return runs.filter(run => run.cells > 0)
+}
+
+/** The categories' indexes in the order the grid draws them: used, free, then buffer. */
+export function gridOrder(map: CockpitContextMap): number[] {
+  return (['used', 'free', 'buffer'] as const).flatMap(kind => map.categories.flatMap((c, i) => (c.kind === kind ? [i] : [])))
 }
 
 /** The legend's header, as /context heads it: `claude-opus · 45k/200k tokens (23%)`. */

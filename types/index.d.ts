@@ -197,7 +197,7 @@ export type CockpitContextCategory = {
   kind: 'used' | 'free' | 'buffer'
 }
 
-/** The context window by category, from the last breakdown read. */
+/** The context window by category, from one breakdown. */
 export type CockpitContextMap = {
   categories: readonly CockpitContextCategory[]
   /** The window measured against, in tokens: the model's, or a smaller compaction window. */
@@ -243,6 +243,7 @@ declare module 'claude-code' {
       tick: number
       inventory: CockpitInventory | null
       contextMap: CockpitContextMap | null
+      contextDetail: CockpitContextMap | null
       contextExpanded: boolean
       autoBlocks: Readonly<Record<string, CockpitAutoBlock>>
       approvals: readonly CockpitApproval[]

@@ -17,7 +17,7 @@ import type {
   CockpitTurnRow,
 } from '../../types'
 import { callTool, describeAgent, describeChecked, describePlan, formatAgo, planBar } from '../lib/activity'
-import { BAR_CELLS, contextBar, contextGrid, describeCategory, describeContextMap, GRID_WIDTH, legendGlyph } from '../lib/context'
+import { BAR_CELLS, contextGrid, describeCategory, describeContextMap, GRID_WIDTH, gridOrder, legendGlyph, usageBar } from '../lib/context'
 import { count, formatDuration, formatTally, roundBrief } from '../lib/rounds'
 import {
   describeCalls,
@@ -47,8 +47,10 @@ export type TimelineModel = {
   elapsedMs?: number
   /** The context window's fill, as `$.session.usage()` reports it. */
   context?: { tokens?: number; window?: number; percent?: number }
-  /** The window by category, as /context breaks it down; absent, no bar or grid. */
+  /** The window by category, estimated locally: the bar's window and buffer. Absent, no bar or grid. */
   contextMap?: CockpitContextMap | null
+  /** The window by category, counted as /context counts it, for the grid; null until counted. */
+  contextDetail?: CockpitContextMap | null
   isContextExpanded?: boolean
   /** The last run of each kind of check; none, and the line is left out. */
   checks?: readonly CockpitCheck[]
@@ -381,9 +383,9 @@ function callSubject(call: CockpitCall, stats: Readonly<Record<string, CockpitAg
 const LEGEND_MIN = 24
 
 /**
- * The overview's context line: the window as a bar of its categories, then
- * the figures; pressed, the grid /context draws, with its legend beside it.
- * Without a breakdown, the figures alone.
+ * The overview's context line: the window as a bar (used, left, the
+ * compaction buffer), then the figures; pressed, the grid /context draws, with
+ * its legend beside it. Without a breakdown, the figures alone.
  */
 function contextRows(
   ui: Elements[RenderSurface],
@@ -396,19 +398,15 @@ function contextRows(
   const map = model.contextMap
   if (map === undefined || map === null) return [field('context', 'context', figures)]
 
-  const tint = (category: number) => {
-    const row = map.categories[category]
-    return { color: row?.color, dimColor: row === undefined || row.kind !== 'used' }
-  }
   const rows: RenderElement[] = [
     field(
       'context',
       'context',
       <Box flexDirection="row" gap={1}>
         <Box flexDirection="row" flexShrink={0}>
-          {contextBar(map, BAR_CELLS).map((run, i) => (
-            <Text key={'bar-' + i} {...tint(run.category)}>
-              {(run.category === -1 || map.categories[run.category]!.kind !== 'used' ? '□' : '■').repeat(run.cells)}
+          {usageBar(map, model.context, BAR_CELLS).map(run => (
+            <Text key={'bar-' + run.kind} color={run.kind === 'used' ? 'claude' : undefined} dimColor={run.kind !== 'used'}>
+              {(run.kind === 'used' ? '■' : run.kind === 'free' ? '□' : '▨').repeat(run.cells)}
             </Text>
           ))}
         </Box>
@@ -419,6 +417,27 @@ function contextRows(
   if (!model.isContextExpanded) return rows
 
   const indent = ' '.repeat(13)
+  const detail = model.contextDetail
+  if (detail === undefined || detail === null) {
+    rows.push(
+      <Text key="context-counting" dimColor>
+        {indent + 'counting…'}
+      </Text>,
+    )
+    return rows
+  }
+  return [...rows, ...contextDetailRows(ui, detail, columns)]
+}
+
+/** The grid /context draws, with its legend beside it, or under it on a narrow pane. */
+function contextDetailRows(ui: Elements[RenderSurface], map: CockpitContextMap, columns: number): RenderElement[] {
+  const { Box, Text } = ui
+  const rows: RenderElement[] = []
+  const indent = ' '.repeat(13)
+  const tint = (category: number) => {
+    const row = map.categories[category]
+    return { color: row?.color, dimColor: row === undefined || row.kind !== 'used' }
+  }
   // ⛁ ⛁ ⛀ ⛶ …: a square each 1% of the window, runs of one category in one Text.
   const grid = contextGrid(map).map((squares, r) => {
     const runs: Array<{ category: number; glyphs: string[] }> = []
@@ -438,7 +457,8 @@ function contextRows(
     )
   })
 
-  const shown = map.categories.filter(category => category.tokens > 0)
+  // In the grid's order, so the legend reads as the squares do.
+  const shown = gridOrder(map).map(i => map.categories[i]!).filter(category => category.tokens > 0)
   const gridWidth = GRID_WIDTH * 2 - 1
   const isBeside = columns - 13 - gridWidth - 3 >= LEGEND_MIN
   const legendRoom = isBeside ? columns - 13 - gridWidth - 3 : columns - 13

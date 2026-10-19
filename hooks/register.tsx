@@ -73,8 +73,13 @@ const planExpanded = atom({ plugin: 'cockpit', key: 'planExpanded' } as const, f
 const agentStats = atom({ plugin: 'cockpit', key: 'agentStats' } as const, {})
 const tick = atom({ plugin: 'cockpit', key: 'tick' } as const, 0)
 const inventory = atom({ plugin: 'cockpit', key: 'inventory' } as const, null)
-/** The context window by category, from the last breakdown read; null before one. */
+/**
+ * The context window by category: `contextMap` from the local estimate (whose
+ * window and compaction buffer the pane's bar reads), `contextDetail` counted
+ * as /context counts it, read only while the pane shows the grid.
+ */
 const contextMap = atom({ plugin: 'cockpit', key: 'contextMap' } as const, null)
+const contextDetail = atom({ plugin: 'cockpit', key: 'contextDetail' } as const, null)
 const contextExpanded = atom({ plugin: 'cockpit', key: 'contextExpanded' } as const, false)
 const autoBlocks = atom({ plugin: 'cockpit', key: 'autoBlocks' } as const, {})
 const approvals = atom({ plugin: 'cockpit', key: 'approvals' } as const, [])
@@ -199,6 +204,21 @@ async function refreshInventory($: EngineInterface): Promise<void> {
     await update($, inventory, () => found)
   } catch {
     // Nothing to read: the overview keeps what it had.
+  }
+}
+
+/**
+ * Counts the context window by category as /context does (`full`: a
+ * token-count request per tool and memory file), for the pane's grid. The
+ * local estimate leaves out the conversation itself, so the grid can't use it.
+ */
+async function refreshContextDetail($: EngineInterface): Promise<void> {
+  try {
+    const usage = await $.session.usage({ breakdown: 'full' })
+    const map = contextMapFrom(usage.context.breakdown)
+    await update($, contextDetail, () => map)
+  } catch {
+    // Nothing counted: the grid keeps what it had.
   }
 }
 
@@ -529,6 +549,7 @@ export const register: Register = (on, options) => {
         if (unread.length > 0) await update($, queued, current => [...current, ...unread.map(text => ({ text, passed: 0 }))].slice(-MAX_QUEUED))
         // MCP servers connect and skills load as the session goes: look again after each turn.
         await refreshInventory($)
+        if (await read($, contextExpanded)) await refreshContextDetail($)
       }
       return reply
     })
@@ -601,8 +622,12 @@ export const register: Register = (on, options) => {
         plan: await read($, plan),
         isPlanExpanded: await read($, planExpanded),
         contextMap: await read($, contextMap),
+        contextDetail: await read($, contextDetail),
         isContextExpanded: await read($, contextExpanded),
-        onToggleContext: () => update($, contextExpanded, shown => !shown),
+        onToggleContext: async () => {
+          const isShown = await update($, contextExpanded, shown => !shown)
+          if (isShown) await refreshContextDetail($)
+        },
         expandedTurn: await read($, expandedTurn),
         agentStats: await read($, agentStats),
         now,
@@ -628,6 +653,7 @@ export const register: Register = (on, options) => {
       await update($, timeline, current => foldCompacted(current))
       // The window was just emptied: break it down again.
       await refreshInventory($)
+      if (await read($, contextExpanded)) await refreshContextDetail($)
       return next(e)
     })
   }
