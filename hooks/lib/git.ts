@@ -6,7 +6,9 @@
 // - untracked, unignored files: each one's blob, written with
 //   `git hash-object -w`;
 // - the change: `git diff --numstat` between the two snapshots' commits, and
-//   between the two blobs of each untracked file that changed.
+//   between the two blobs of each untracked file that changed;
+// - one file's diff, asked for when the person presses it: `git diff` over
+//   the same pair, kept on the edits for as long as the objects last.
 //
 // Every git call goes through `run`, so the module holds no `$`.
 
@@ -118,7 +120,7 @@ export function parseCounts(text: string): { added: number | null; removed: numb
 /** One blob-to-blob change. Without -z: with it, numstat leaves the path field empty for a blob pair. */
 async function blobDiff(run: GitRun, root: string, from: string, to: string, path: string): Promise<CockpitEditedFile> {
   const text = await out(run, ['diff', '--numstat', from, to], { cwd: root })
-  return { path, ...(text === null ? { added: null, removed: null } : parseCounts(text)) }
+  return { path, ...(text === null ? { added: null, removed: null } : parseCounts(text)), blobs: [from, to] }
 }
 
 /** The empty blob's id, writing it first so that diffs can name it. */
@@ -165,7 +167,10 @@ export async function diffSnapshots(run: GitRun, from: CockpitGitSnapshot, to: C
         continue
       }
       if (index >= MAX_BLOB_DIFFS || (empty === null && (a === null || b === null))) {
-        byPath.set(path, { path, added: null, removed: null })
+        // Its lines aren't counted; its diff can still be asked for when both sides are known.
+        const from = a ?? empty
+        const to = b ?? empty
+        byPath.set(path, { path, added: null, removed: null, ...(from !== null && to !== null ? { blobs: [from, to] as const } : {}) })
         continue
       }
       byPath.set(path, await blobDiff(run, root, a ?? empty!, b ?? empty!, path))
@@ -173,5 +178,23 @@ export async function diffSnapshots(run: GitRun, from: CockpitGitSnapshot, to: C
   }
 
   const files = [...byPath.values()].filter(file => file.added !== 0 || file.removed !== 0)
-  return totalEdits(files)
+  return { ...totalEdits(files), range: { root, from: from.tree, to: to.tree } }
+}
+
+/** The most lines of one file's diff kept for the pane. */
+export const MAX_DIFF_LINES = 2000
+
+/**
+ * One edited file's diff as `git diff` prints it, cut to MAX_DIFF_LINES; null
+ * for a large file, for edits with no snapshots to compare, or when git can't
+ * produce it (the snapshot's objects were pruned since).
+ */
+export async function fileDiff(run: GitRun, edits: CockpitEdits, file: CockpitEditedFile): Promise<string | null> {
+  const range = edits.range
+  if (range === undefined || file.large === true) return null
+  const args = file.blobs !== undefined ? [file.blobs[0], file.blobs[1]] : ['--no-renames', range.from, range.to, '--', file.path]
+  const text = await out(run, ['diff', '--no-color', '--no-ext-diff', ...args], { cwd: range.root })
+  if (text === null) return null
+  const lines = text.replace(/\n$/, '').split('\n')
+  return lines.length <= MAX_DIFF_LINES ? lines.join('\n') : [...lines.slice(0, MAX_DIFF_LINES), `… ${lines.length - MAX_DIFF_LINES} more lines`].join('\n')
 }

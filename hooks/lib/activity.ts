@@ -2,7 +2,16 @@
 // checks a shell command ran (tests, lint, types, build), the plan the model
 // keeps, and what a subagent did. register.tsx feeds them tool.call results.
 
-import type { CockpitAgentStats, CockpitCall, CockpitCheck, CockpitCheckKind, CockpitCheckRun, CockpitLiveTurn, CockpitPlanItem } from '../../types'
+import type {
+  CockpitAgentStats,
+  CockpitCall,
+  CockpitCheck,
+  CockpitCheckKind,
+  CockpitCheckRun,
+  CockpitEdits,
+  CockpitLiveTurn,
+  CockpitPlanItem,
+} from '../../types'
 import { count, formatDuration, toolLabel } from './rounds'
 import { program, segments } from './rules'
 import { noteOf } from './timeline'
@@ -184,6 +193,47 @@ export function recordChecks(
 }
 
 const KIND_ORDER: readonly CockpitCheckKind[] = ['tests', 'lint', 'types', 'build']
+
+// ── Edits no check ran after ─────────────────────────────────────────────
+
+/** The file tools that change a file, and the argument that names it. */
+export const EDIT_TOOLS: Readonly<Record<string, string>> = { Edit: 'file_path', Write: 'file_path', MultiEdit: 'file_path', NotebookEdit: 'notebook_path' }
+
+/** True for a file a check could cover; prose and images aren't. */
+export function isSourcePath(path: string): boolean {
+  const name = path.replace(/\\/g, '/').replace(/^.*\//, '')
+  if (/\.(?:md|mdx|markdown|txt|rst|adoc|org|png|jpe?g|gif|webp|ico|bmp)$/i.test(name)) return false
+  return !/^(?:LICEN[CS]E|CHANGELOG|AUTHORS|NOTICE)(?:\..*)?$/i.test(name)
+}
+
+/** The source file a call changed, if it was a file tool that changed one. */
+export function editedSource(tool: string, input: Record<string, unknown>): string | undefined {
+  const field = EDIT_TOOLS[tool]
+  const path = field === undefined ? undefined : input[field]
+  return typeof path === 'string' && path !== '' && isSourcePath(path) ? path : undefined
+}
+
+/** The running turn once a file tool changed a source file: nothing checked it yet. */
+export function withEdit(live: CockpitLiveTurn | null): CockpitLiveTurn | null {
+  return live === null || live.checkState === 'edited' ? live : { ...live, checkState: 'edited' }
+}
+
+/** The running turn once a check ran, passing or failing: the edits so far were checked. */
+export function withCheck(live: CockpitLiveTurn | null): CockpitLiveTurn | null {
+  return live === null || live.checkState === 'checked' ? live : { ...live, checkState: 'checked' }
+}
+
+/**
+ * Whether a finished turn changed source files with no check after its last
+ * edit. With git's view of the turn (`edits`), a change made through the shell
+ * counts too, covered by any check the turn ran; without it, the file tools'
+ * edits alone.
+ */
+export function isUnchecked(live: CockpitLiveTurn, edits: CockpitEdits | null): boolean {
+  if (live.checkState === 'checked') return false
+  if (edits !== null) return edits.files.some(file => isSourcePath(file.path))
+  return live.checkState === 'edited'
+}
 
 /** `just now`, `45s ago`, `3m ago`, `2h ago`. */
 export function formatAgo(ms: number): string {

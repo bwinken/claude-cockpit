@@ -8,7 +8,10 @@ import {
   checkKinds,
   describeAgent,
   describePlan,
+  editedSource,
   errorLine,
+  isSourcePath,
+  isUnchecked,
   MAX_CALLS,
   noteLabel,
   noteUsage,
@@ -20,9 +23,11 @@ import {
   recordChecks,
   relativePath,
   subjectOfCall,
+  withCheck,
+  withEdit,
 } from '../hooks/lib/activity'
 import { startTurn } from '../hooks/lib/rounds'
-import { drain, notGit, pane, stepsByTurn, SURFACES } from './helpers'
+import { drain, notGit, pane, stepsByTurn, SURFACES, turnDuration } from './helpers'
 
 describe('activity helpers', () => {
   test('a call reads as what it ran on', async () => {
@@ -362,5 +367,92 @@ describe('timeline pane: what each turn did', () => {
       await ui.press({ key: 'turn-t1' })
       await ui.unmount()
     }
+  })
+})
+
+describe('edits no check ran after', () => {
+  test('source files are what a check covers; prose and images are not', async () => {
+    for (const path of ['src/a.ts', 'hooks/register.tsx', 'Makefile', 'app.py', '.github/workflows/ci.yml']) expect(isSourcePath(path)).toBe(true)
+    for (const path of ['README.md', 'docs/guide.mdx', 'notes.txt', 'docs\\images\\shot.png', 'LICENSE', 'CHANGELOG']) expect(isSourcePath(path)).toBe(false)
+    expect(editedSource('Edit', { file_path: '/w/src/a.ts' })).toBe('/w/src/a.ts')
+    expect(editedSource('Write', { file_path: '/w/README.md' })).toBeUndefined()
+    expect(editedSource('Read', { file_path: '/w/src/a.ts' })).toBeUndefined()
+  })
+
+  test("a turn is unchecked when its last source edit had no check after it", async () => {
+    const turn = startTurn('t1')
+    expect(isUnchecked(turn, null)).toBe(false)
+    expect(isUnchecked(withEdit(turn)!, null)).toBe(true)
+    expect(isUnchecked(withCheck(withEdit(turn))!, null)).toBe(false)
+    // A check, then another edit: that edit wasn't checked.
+    expect(isUnchecked(withEdit(withCheck(withEdit(turn)))!, null)).toBe(true)
+    // By git: a source change through the shell counts; a change to prose doesn't.
+    const edits = (path: string) => ({ files: [{ path, added: 1, removed: 0 }], added: 1, removed: 0 })
+    expect(isUnchecked(turn, edits('src/a.ts'))).toBe(true)
+    expect(isUnchecked(turn, edits('README.md'))).toBe(false)
+    expect(isUnchecked(withCheck(turn)!, edits('src/a.ts'))).toBe(false)
+    expect(isUnchecked(withEdit(turn)!, { files: [], added: 0, removed: 0 })).toBe(false)
+  })
+
+  /** One turn of `calls` (tool, input), each answered as `world` answers it. */
+  async function turnOf($: any, turnId: string, prompt: string, calls: Array<Record<string, unknown>>) {
+    await $.turn.start({ text: prompt, turnId })
+    await drain($.turn.step({ turnId, index: 0, model: 'any-model', messageCount: 1 }))
+    for (const [i, call] of calls.entries()) await $.tool.call({ ...call, tool_use_id: `${turnId}_${i}` })
+    await drain($.turn.step({ turnId, index: 1, model: 'any-model', messageCount: 3 }))
+    await $.turn.complete({ turnId, answer: 'done', durationMs: 1_000 + calls.length, isAborted: false, reason: 'answer' })
+  }
+
+  const PLAN = (n: number) => [{ tools: Array(n).fill('Edit') }, { tools: [] }]
+
+  test('flagged on the summary, the row and the checks line until a check runs', async ($, on) => {
+    world(on, {
+      Edit: e => (String(e.file_path).endsWith('/c.ts') ? { isError: true, result: 'x', text: 'String to replace not found' } : { result: 'ok', text: 'ok' }),
+    })
+    on('ui.render', () => ({ type: 'Text' as const, props: {}, children: ['✻ Baked for 1s'] }))
+    on('turn.step', stepsByTurn({ t1: PLAN(1), t2: PLAN(2), t3: PLAN(1), t4: PLAN(1), t5: PLAN(2) }))
+
+    await turnOf($, 't1', 'change it', [{ tool: 'Edit', file_path: '/work/src/a.ts', old_string: 'a', new_string: 'b' }])
+    const closing = await $.ui.mount(turnDuration(1_001))
+    expect(await closing.find({ type: 'Text', text: '  ⎿  1 round · 1 tool call (Edit) · ⚠ edits not checked' })).toBeDefined()
+    await closing.unmount()
+    let ui = await $.ui.mount(pane('terminal'))
+    expect(await turnLines(ui)).toEqual(['#1 change it 1 call 1.0s ⚠ unchecked'])
+    expect(texts(await ui.find({ key: 'checks' })).join('')).toBe('  checksnone yet · ⚠ code edited since')
+    await ui.unmount()
+
+    // Edited, then tested: the turn is checked, and the warning goes, though the tests failed.
+    await turnOf($, 't2', 'fix and test', [
+      { tool: 'Edit', file_path: '/work/src/a.ts', old_string: 'b', new_string: 'c' },
+      { tool: 'Bash', command: 'npm test' },
+    ])
+    ui = await $.ui.mount(pane('terminal'))
+    expect((await turnLines(ui))[1]).toBe('#2 fix and test 2 calls 1.0s')
+    expect(texts(await ui.find({ key: 'checks' })).join('')).toBe('  checkstests ✓ just now')
+    await ui.unmount()
+
+    // Prose needs no check.
+    await turnOf($, 't3', 'document it', [{ tool: 'Write', file_path: '/work/README.md', content: '# a' }])
+    // A subagent's edit is the turn's too.
+    await turnOf($, 't4', 'delegate', [{ tool: 'Edit', file_path: '/work/src/b.ts', old_string: 'x', new_string: 'y', agentId: 'a1' }])
+    ui = await $.ui.mount(pane('terminal'))
+    expect((await turnLines(ui)).slice(2)).toEqual(['#3 document it 1 call 1.0s', '#4 delegate 1 call 1.0s ⚠ unchecked'])
+    expect(texts(await ui.find({ key: 'checks' })).join('')).toBe('  checkstests ✓ just now · ⚠ code edited since')
+    await ui.unmount()
+
+    // A failed edit changed nothing; a lint run clears the warning as tests do.
+    await turnOf($, 't5', 'lint it', [{ tool: 'Bash', command: 'npm run lint' }, { tool: 'Edit', file_path: '/work/src/c.ts', old_string: 'x', new_string: 'y' }])
+    ui = await $.ui.mount(pane('terminal'))
+    expect((await turnLines(ui))[4]).toBe('#5 lint it 2 calls 1.0s ✗ 1')
+    expect(texts(await ui.find({ key: 'checks' })).join('')).toBe('  checkstests ✓ just now · lint ✓ just now')
+  })
+
+  test('turned off in userConfig, nothing is flagged', { options: { uncheckedEdits: false } }, async ($, on) => {
+    world(on, {})
+    on('turn.step', stepsByTurn({ t1: PLAN(1) }))
+    await turnOf($, 't1', 'change it', [{ tool: 'Edit', file_path: '/work/src/a.ts', old_string: 'a', new_string: 'b' }])
+    const ui = await $.ui.mount(pane('terminal'))
+    expect(await turnLines(ui)).toEqual(['#1 change it 1 call 1.0s'])
+    expect(await ui.find({ key: 'checks' })).toBeUndefined()
   })
 })

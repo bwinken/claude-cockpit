@@ -34,21 +34,25 @@ spinner 會顯示目前第幾輪、這輪跑幾個 tool call。turn 結束時，
 
 ![對話旁的 timeline pane：展開一輪，看得到每個呼叫、一開始失敗的測試，以及 subagent 那一輪](docs/images/timeline.png)
 
-每輪一行：prompt、呼叫數、時間、改動行數，有呼叫失敗（出錯、非零退出、被擋下）時標 `✗ n`。點一下某一輪，會在底下列出它的每個呼叫，失敗的用紅字並附上 Claude 讀到的錯誤；跑了檢查的指令會標出結果（`tests ✗`），最後是它改過的檔案。
+每輪一行：prompt、呼叫數、時間、改動行數，有呼叫失敗（出錯、非零退出、被擋下）時標 `✗ n`。點一下某一輪，會在底下列出它的每個呼叫，失敗的用紅字並附上 Claude 讀到的錯誤；跑了檢查的指令會標出結果（`tests ✗`），最後是它改過的檔案。點一下檔案會打開它的 diff。
 
 - **context**：一條代表 context window 的格子，`■□□□…□▨ 4% of 1M (38.4k)`：已用、剩餘，以及 autocompact buffer。點一下展開 `/context` 的格狀圖，每格代表 window 的 1%，旁邊列出各類別的 token 數（system prompt、工具、memory 檔、skills、訊息、剩餘空間、buffer）。格狀圖的算法跟 `/context` 一樣，每個工具和 memory 檔各送一次 token 計數請求，所以只在展開時計算：展開的當下，以及之後每個 turn 結束時。
 
   ![展開的 context：/context 的格狀圖，旁邊是各類別的 token 數](docs/images/context.png)
 
-- **checks**：每種檢查最近一次的結果，Claude 或 subagent 跑的都算：`tests ✗ 2m ago · lint ✓ just now`。依 shell 指令內容判斷種類（`npm test`、`pytest`、`cargo clippy`、`tsc`、`npm run build` 等）；非零退出或輸出顯示失敗就算失敗。
+- **checks**：每種檢查最近一次的結果，Claude 或 subagent 跑的都算：`tests ✗ 2m ago · lint ✓ just now`。依 shell 指令內容判斷種類（`npm test`、`pytest`、`cargo clippy`、`tsc`、`npm run build` 等）；非零退出或輸出顯示失敗就算失敗。最後一次檢查之後如果又改了原始碼，這一行最後會標 `⚠ code edited since`。
 - **plan**：Claude 用 task 工具（TodoWrite，或 TaskCreate／TaskUpdate）列的步驟，畫成一條格子 `■■■□□ 3/5 · Running tests`：完成、進行中、待做。點一下列出各步驟。
 - **skills** 和 **mcp** 只列有用到的。
 
 Claude 還在回覆時輸入的訊息，會以一行淡色的 `↳` 顯示在讀到它的那一輪底下；如果那一輪先結束，它會以 `⋯ queued` 顯示，直到輪到它自己成為一輪。背景 subagent 完成時顯示為 `⚙ Agent "…" finished · 3 calls · 2.1s`，它有呼叫失敗時加上 `✗ n`；在某一輪進行中送達就放在那一輪底下，否則自成一輪（幾個同時完成會合併成一輪，標示 `+n more`）。compact 後會畫一條 `── compacted ──` 分隔線，編號重新開始。`/clear`、`/resume`、`/branch` 會從空的 timeline 開始。
 
+### 改了沒檢查
+
+一輪改了原始碼，但最後一次修改之後沒有跑任何檢查（測試、lint、型別檢查或建置），它的摘要行最後會標 `⚠ edits not checked`，timeline 那一輪標 `⚠ unchecked`。Claude 的檔案工具、subagent、以及（在 git 裡）透過 Bash 做的修改都算；文件和圖片（`.md`、`.txt`、`.png`、`LICENSE` 等）不算。用 `uncheckedEdits` 關閉。
+
 ### Edited files 列
 
-在 git repo 裡，輸入框上方會顯示上一輪改了什麼，包含透過 Bash 做的修改。**Show files** 列出每個檔案；用 ctrl+x tab 可以從鍵盤移到這一列。不在 git 裡就不顯示。
+在 git repo 裡，輸入框上方會顯示上一輪改了什麼，包含透過 Bash 做的修改。**Show files** 列出每個檔案，點一下檔案會在 pane 裡打開它的 diff；用 ctrl+x tab 可以從鍵盤移到這一列。不在 git 裡就不顯示。
 
 ![展開後的 Edited files 列](docs/images/band.png)
 
@@ -63,6 +67,10 @@ guard 會擋下明顯具破壞性的呼叫，並告訴 Claude 該改用什麼方
 | `rm-rf` | 各種寫法的 `rm -rf`，以及 PowerShell 的 `Remove-Item -Recurse -Force` |
 | `git-reset-hard` | `git reset --hard` |
 | `git-push-force` | `git push --force`、`-f` 或 `+` refspec（`--force-with-lease` 不擋） |
+| `git-discard` | `git clean -f`，以及對整個工作目錄的 `git checkout .`／`git restore .`（指定單一檔案不擋） |
+| `pipe-to-shell` | 沒看過就直接執行下載的腳本：`curl … \| sh`、`bash <(curl …)`、PowerShell 的 `irm … \| iex` |
+| `chmod-777` | `chmod 777`、`0777` 或 `a+rwx` |
+| `read-secrets` | 讀取 `.env` 及其變體（`.env.example` 不擋）、`.envrc`、SSH 私鑰、`~/.aws/credentials`、`.netrc`：用 Read、Grep，或 `cat`、`grep` 這類指令 |
 | `write-outside-project` | 寫入專案外的 Edit/Write；暫存目錄、`~/.claude`、`/add-dir` 與 `additionalDirectories` 除外 |
 
 自訂規則寫在 `~/.claude/cockpit-rules.json`。專案裡的 `.claude/cockpit-rules.json` 只能新增 `deny` 規則。
@@ -89,6 +97,7 @@ guard 會擋下明顯具破壞性的呼叫，並告訴 Claude 該改用什麼方
 | `timeline` | `true` | Timeline pane 與 `/cockpit` |
 | `timelineAutoOpen` | `false` | 每次開 session 自動打開 pane |
 | `editedFiles` | `true` | Edited files 列（關閉時完全不跑 git） |
+| `uncheckedEdits` | `true` | 標出改了卻沒跑檢查的那一輪 |
 | `gate` | `true` | Tool guard |
 | `gateAutoModePrompt` | `true` | auto mode 擋下時詢問 |
 | `gateRulesFile` | `~/.claude/cockpit-rules.json` | 自訂規則檔 |
@@ -98,6 +107,8 @@ guard 會擋下明顯具破壞性的呼叫，並告訴 Claude 該改用什麼方
 
 - guard 讀的是指令文字，防的是無心之過，擋不住刻意繞過（`eval`、腳本、Bash 重新導向）。啟動時用 `--add-dir` 加的目錄 mod 看不到，請列在 `writableRoots`。
 - 組織管理的 `deny` 規則和 managed hook 優先於 cockpit，「Run it once」無法蓋過它們。
+- 檢查是依執行它的指令判斷的。如果你的專案用別的方式跑檢查（自己寫的腳本），每一輪改了程式碼都會顯示 `⚠ unchecked`：請關閉 `uncheckedEdits`。
+- 檔案的 diff 來自 cockpit 讓 git 寫入的快照，沒有任何 ref 指向它們。`git gc` 清掉之後（預設兩週），diff pane 會顯示無法再呈現這個修改。
 - 改過的檔案由 git 判斷：turn 進行中手動改的也算進該輪，rename 會顯示成刪除＋新增，超過 2 MiB 的未追蹤檔案顯示為 `large file`、沒有行數。
 - 已在 Linux 的真實終端機 session 測過；CI 在 Linux、macOS、Windows 跑測試。Desktop app 還沒在真實 session 中確認過。
 - 在終端機以外，Claude Code 會在摘要那行前面加上所有掛在 turn 結束事件上的 mod 名稱。

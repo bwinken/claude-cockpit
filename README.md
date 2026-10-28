@@ -34,21 +34,25 @@ A round is the set of tool calls in one model response. Subagents aren't counted
 
 ![Timeline pane beside the transcript: a turn pressed open to its calls, the failing test run it started from, and a subagent's turn](docs/images/timeline.png)
 
-Each turn is one line: its prompt, calls, time, lines changed and `✗ n` for calls that failed (an error, a non-zero exit, a blocked call). Press a turn to list its calls under it, failures in red with the error Claude read, a command that ran checks with how they went (`tests ✗`), then the files it edited.
+Each turn is one line: its prompt, calls, time, lines changed and `✗ n` for calls that failed (an error, a non-zero exit, a blocked call). Press a turn to list its calls under it, failures in red with the error Claude read, a command that ran checks with how they went (`tests ✗`), then the files it edited. Press a file to open its diff.
 
 - **context**: a bar of the window, `■□□□…□▨ 4% of 1M (38.4k)`: what's used, what's left, and the autocompact buffer. Press it for `/context`'s grid, a square for each 1% of the window, beside each category's tokens (system prompt, tools, memory files, skills, messages, free space, the buffer). The grid is counted as `/context` counts it, with a token-count request per tool and memory file, so it's counted only while it's open: when you open it and after each turn.
 
   ![The context line pressed open: /context's grid beside each category's tokens](docs/images/context.png)
 
-- **checks**: the last run of each kind of check, by Claude or a subagent: `tests ✗ 2m ago · lint ✓ just now`. A shell command counts as one by what it runs (`npm test`, `pytest`, `cargo clippy`, `tsc`, `npm run build`, …); it failed when it exited non-zero or its output says so.
+- **checks**: the last run of each kind of check, by Claude or a subagent: `tests ✗ 2m ago · lint ✓ just now`. A shell command counts as one by what it runs (`npm test`, `pytest`, `cargo clippy`, `tsc`, `npm run build`, …); it failed when it exited non-zero or its output says so. While source files have changed since the last check, the line ends with `⚠ code edited since`.
 - **plan**: the steps Claude keeps with its task tools (TodoWrite, or TaskCreate and TaskUpdate) as a bar, `■■■□□ 3/5 · Running tests`: done, running, waiting. Press it to list the steps.
 - **skills** and **mcp** name only what was used.
 
 A message you type while Claude is still answering shows as a dim `↳` line under the turn that read it; if the turn ends first, it shows as `⋯ queued` until it runs as a turn of its own. A background subagent finishing shows as `⚙ Agent "…" finished · 3 calls · 2.1s`, with `✗ n` when some of its calls failed: under the running turn when it arrives mid-turn, or as its own turn (`+n more` when several land together). A compaction draws a `── compacted ──` divider and numbering restarts. `/clear`, `/resume` and `/branch` start an empty timeline.
 
+### Unchecked edits
+
+A turn that changed source files and ran no check (tests, lint, a type-check or a build) after its last edit ends with `⚠ edits not checked` on its summary line, and its timeline row with `⚠ unchecked`. Edits by Claude's file tools, by a subagent, and (in git) through Bash all count. Changes to prose and images (`.md`, `.txt`, `.png`, `LICENSE`, …) don't. Turn it off with `uncheckedEdits`.
+
 ### Edited files band
 
-In a git repository, a band above the prompt shows what the last turn changed, including changes made through Bash. **Show files** lists them; ctrl+x tab reaches the band from the keyboard. Outside git it never appears.
+In a git repository, a band above the prompt shows what the last turn changed, including changes made through Bash. **Show files** lists them; press a file to open its diff in a pane. ctrl+x tab reaches the band from the keyboard. Outside git it never appears.
 
 ![Edited files band, expanded](docs/images/band.png)
 
@@ -63,6 +67,10 @@ The guard refuses calls that are clearly destructive and tells Claude what to do
 | `rm-rf` | `rm -rf` in any spelling, and PowerShell's `Remove-Item -Recurse -Force` |
 | `git-reset-hard` | `git reset --hard` |
 | `git-push-force` | `git push --force`, `-f` or a `+` refspec (`--force-with-lease` is fine) |
+| `git-discard` | `git clean -f`, and `git checkout .` / `git restore .` over the whole tree (one named file is fine) |
+| `pipe-to-shell` | A download run unread: `curl … \| sh`, `bash <(curl …)`, PowerShell's `irm … \| iex` |
+| `chmod-777` | `chmod 777`, `0777` or `a+rwx` |
+| `read-secrets` | Reading `.env` and its variants (not `.env.example`), `.envrc`, SSH private keys, `~/.aws/credentials`, `.netrc`: by Read, Grep, or `cat`, `grep` and the like |
 | `write-outside-project` | Edit/Write outside the project, except temp dirs, `~/.claude`, `/add-dir` and `additionalDirectories` |
 
 Add your own in `~/.claude/cockpit-rules.json`. A project's `.claude/cockpit-rules.json` may only add `deny` rules.
@@ -89,6 +97,7 @@ Set these in `/config`, or under `pluginConfigs["cockpit@claude-cockpit"].option
 | `timeline` | `true` | Timeline pane and `/cockpit` |
 | `timelineAutoOpen` | `false` | Open the pane at every session start |
 | `editedFiles` | `true` | Edited files band (off: git never runs) |
+| `uncheckedEdits` | `true` | Flag turns whose edits no check ran after |
 | `gate` | `true` | Tool guard |
 | `gateAutoModePrompt` | `true` | Ask after auto mode blocks a call |
 | `gateRulesFile` | `~/.claude/cockpit-rules.json` | Your rules file |
@@ -98,6 +107,8 @@ Set these in `/config`, or under `pluginConfigs["cockpit@claude-cockpit"].option
 
 - The guard reads command text. It catches honest mistakes, not determined workarounds (`eval`, scripts, Bash redirects). Directories from `--add-dir` at startup aren't visible to a mod; list them in `writableRoots`.
 - Managed `deny` rules and managed hooks win over cockpit, so "Run it once" can't override them.
+- Checks are recognized by the command that runs them. If your project's checks run some other way (a script of its own), every turn that edits code shows `⚠ unchecked`: turn off `uncheckedEdits`.
+- A file's diff comes from the snapshots cockpit has git write, which nothing references. Once `git gc` prunes them (after two weeks, by default), the diff pane says it can no longer show that change.
 - Edited files come from git: hand edits during a turn count as the turn's, renames show as remove + add, and untracked files over 2 MiB show as `large file` without line counts.
 - Tested in real terminal sessions on Linux. CI runs the tests on Linux, macOS and Windows. The Desktop app hasn't been checked in a real session yet.
 - Outside the terminal, Claude Code labels the summary line with the names of every mod that hooks the end of a turn.

@@ -9,6 +9,7 @@ export type CockpitConfig = {
   timeline: boolean
   timelineAutoOpen: boolean
   editedFiles: boolean
+  uncheckedEdits: boolean
   gate: boolean
   gateAutoModePrompt: boolean
   gateRulesFile: string
@@ -31,6 +32,7 @@ export function readConfig(options: PluginOptions): CockpitConfig {
     timeline: flag(options.timeline, true),
     timelineAutoOpen: flag(options.timelineAutoOpen, false),
     editedFiles: flag(options.editedFiles, true),
+    uncheckedEdits: flag(options.uncheckedEdits, true),
     gate: flag(options.gate, true),
     gateAutoModePrompt: flag(options.gateAutoModePrompt, true),
     gateRulesFile: typeof options.gateRulesFile === 'string' ? options.gateRulesFile : '~/.claude/cockpit-rules.json',

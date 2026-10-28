@@ -1,24 +1,29 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
+import type { CockpitEditedFile, CockpitEdits } from '../types'
 import {
   addAgentCall,
   addCall,
   callOf,
   checkRun,
+  editedSource,
+  isUnchecked,
   noteLabel,
   planFromTaskList,
   planFromTodos,
   planWithCreated,
   planWithUpdate,
   recordChecks,
+  withCheck,
+  withEdit,
 } from './lib/activity'
 import { appendAudit, auditLine } from './lib/audit'
 import type { AuditEntry } from './lib/audit'
 import { stubClassifier } from './lib/classifier'
 import { contextMapFrom } from './lib/context'
 import { readConfig } from './lib/config'
-import { diffSnapshots, snapshot } from './lib/git'
+import { diffSnapshots, fileDiff, snapshot } from './lib/git'
 import type { GitRun, StatFile } from './lib/git'
 import { beginStep, count, endStep, skillsOf, spinnerText, startTurn, summarize, withStreaming } from './lib/rounds'
 import {
@@ -55,6 +60,7 @@ import {
 } from './lib/rules'
 import type { GuardRules, RulesFile, Verdict } from './lib/rules'
 import { isOlder, MIN_CLAUDE_CODE } from './lib/version'
+import { diffTree } from './ui/diff'
 import { editsBandTree } from './ui/edits'
 import { timelineTree } from './ui/timeline'
 
@@ -87,6 +93,10 @@ const addedDirs = atom({ plugin: 'cockpit', key: 'addedDirs' } as const, [])
 export const lastEdits = atom({ plugin: 'cockpit', key: 'lastEdits' } as const, null)
 export const editsExpanded = atom({ plugin: 'cockpit', key: 'editsExpanded' } as const, false)
 export const editsDismissed = atom({ plugin: 'cockpit', key: 'editsDismissed' } as const, false)
+/** The file whose diff the diff pane shows. */
+const diffView = atom({ plugin: 'cockpit', key: 'diffView' } as const, null)
+/** Set by an edit to a source file, cleared by any check: the checks line warns while it's set. */
+const editedSinceCheck = atom({ plugin: 'cockpit', key: 'editedSinceCheck' } as const, false)
 
 /** The most prompts the pane shows as queued. */
 const MAX_QUEUED = 5
@@ -127,8 +137,15 @@ async function recordCall($: EngineInterface, e: Readonly<Record<string, unknown
     const command = String(input.command)
     const at = await $.clock.now()
     await update($, checks, current => recordChecks(current, command, a.isError === true, a.text ?? '', at))
+    // Passing or failing, the edits before it were checked.
+    await update($, live, withCheck)
+    await update($, editedSinceCheck, () => false)
   }
   if (isFailed) return
+  if (editedSource(e.tool, input) !== undefined) {
+    await update($, live, withEdit)
+    await update($, editedSinceCheck, () => true)
+  }
   if (e.tool === 'TodoWrite') {
     const items = planFromTodos(input.todos)
     if (items !== null) await update($, plan, () => items)
@@ -161,6 +178,17 @@ function isPerson(kind: string): boolean {
 /** The timeline pane, opened by /cockpit. */
 const PANE_ID = 'cockpit-timeline'
 const PANE_TITLE = 'Cockpit timeline'
+
+/** The diff pane, opened by pressing an edited file. */
+const DIFF_PANE_ID = 'cockpit-diff'
+const DIFF_PANE_TITLE = 'Cockpit diff'
+
+/** Asks git for one edited file's diff and opens the diff pane on it. */
+async function openDiff($: EngineInterface, edits: CockpitEdits, file: CockpitEditedFile): Promise<void> {
+  const text = await fileDiff(gitOf($), edits, file)
+  await update($, diffView, () => ({ path: file.path, text }))
+  await $.ui.open({ id: DIFF_PANE_ID, title: DIFF_PANE_TITLE })
+}
 
 /** How many finished turns' summaries wait for their closing line. */
 const KEPT_TURN_LINES = 50
@@ -504,21 +532,6 @@ export const register: Register = (on, options) => {
       await update($, live, () => null)
       if (turn === null || turn.turnId !== e.turnId) return answered
 
-      let reply = answered
-      if (config.roundTrace) {
-        const line = summarize(turn.rounds, e.durationMs, config.roundTraceMaxTools, e.isAborted)
-        if (line !== undefined) {
-          const short = summarize(turn.rounds, undefined, config.roundTraceMaxTools, e.isAborted) ?? line
-          const entry = { durationMs: e.durationMs, text: short }
-          await update($, turnLines, lines => [...lines, entry].slice(-KEPT_TURN_LINES))
-          if (!(await isTerminalOnly($))) {
-            // Keep a line another mod beneath already put under the answer.
-            const theirs = answered.text !== e.answer && answered.text !== '' ? answered.text + ' · ' : ''
-            reply = { ...answered, text: theirs + line }
-          }
-        }
-      }
-
       let edits = null
       if (config.editedFiles && turn.git) {
         const run = gitOf($)
@@ -528,6 +541,27 @@ export const register: Register = (on, options) => {
         await update($, lastEdits, () => shown)
         await update($, editsExpanded, () => false)
         await update($, editsDismissed, () => false)
+      }
+
+      // Source files changed with no check after the last edit: flagged on the summary and the row.
+      const unchecked = config.uncheckedEdits && isUnchecked(turn, edits)
+      if (unchecked) await update($, editedSinceCheck, () => true)
+      const flag = unchecked ? ' · ⚠ edits not checked' : ''
+
+      let reply = answered
+      if (config.roundTrace) {
+        const summary = summarize(turn.rounds, e.durationMs, config.roundTraceMaxTools, e.isAborted)
+        if (summary !== undefined) {
+          const line = summary + flag
+          const short = (summarize(turn.rounds, undefined, config.roundTraceMaxTools, e.isAborted) ?? summary) + flag
+          const entry = { durationMs: e.durationMs, text: short }
+          await update($, turnLines, lines => [...lines, entry].slice(-KEPT_TURN_LINES))
+          if (!(await isTerminalOnly($))) {
+            // Keep a line another mod beneath already put under the answer.
+            const theirs = answered.text !== e.answer && answered.text !== '' ? answered.text + ' · ' : ''
+            reply = { ...answered, text: theirs + line }
+          }
+        }
       }
 
       if (config.timeline) {
@@ -543,6 +577,7 @@ export const register: Register = (on, options) => {
           ...(turn.steers !== undefined && turn.steers.length > 0 ? { steers: turn.steers } : {}),
           ...(turn.calls !== undefined && turn.calls.length > 0 ? { calls: turn.calls } : {}),
           ...(count(turn.failed) > 0 ? { failed: count(turn.failed) } : {}),
+          ...(unchecked ? { unchecked: true as const } : {}),
         }
         await update($, timeline, current => addRow(current, row))
         const unread = turn.waiting ?? []
@@ -619,6 +654,7 @@ export const register: Register = (on, options) => {
         running,
         queued: waiting.map(entry => entry.text),
         checks: await read($, checks),
+        editedSinceCheck: config.uncheckedEdits && (await read($, editedSinceCheck)),
         plan: await read($, plan),
         isPlanExpanded: await read($, planExpanded),
         contextMap: await read($, contextMap),
@@ -633,6 +669,7 @@ export const register: Register = (on, options) => {
         now,
         onToggleTurn: (turnId: string) => update($, expandedTurn, current => (current === turnId ? null : turnId)),
         onTogglePlan: () => update($, planExpanded, shown => !shown),
+        onOpenFile: (edits: CockpitEdits, file: CockpitEditedFile) => openDiff($, edits, file),
         skills: describeSkills(onHand, turns, running),
         mcp: describeMcp(onHand, turns, running),
         columns: e.props.bodyColumns,
@@ -674,10 +711,18 @@ export const register: Register = (on, options) => {
           columns: e.props.bodyColumns,
           onToggle: () => update($, editsExpanded, shown => !shown),
           onDismiss: () => update($, editsDismissed, () => true),
+          onOpenFile: (file: CockpitEditedFile) => openDiff($, edits, file),
         },
         theirs,
       )
     })
+
+    on('ui.render', { component: 'Pane', requestId: 'cockpit-diff' }, async ($, e) =>
+      diffTree($.ui.resolve(e), {
+        view: await read($, diffView),
+        onClose: () => $.ui.close({ id: DIFF_PANE_ID }),
+      }),
+    )
   }
 
   // One tool.call hook for both, as a module may register only one without a matcher.

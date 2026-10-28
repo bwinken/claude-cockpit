@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 
 import type { CockpitTurnRow } from '../types'
-import { diffSnapshots, largeId, MAX_HASH_BYTES, parseCounts, parseNumstat, snapshot } from '../hooks/lib/git'
+import { diffSnapshots, fileDiff, largeId, MAX_DIFF_LINES, MAX_HASH_BYTES, parseCounts, parseNumstat, snapshot } from '../hooks/lib/git'
 import type { GitRun } from '../hooks/lib/git'
 import { makeRound, skillsOf, startTurn } from '../hooks/lib/rounds'
 import {
@@ -32,7 +32,7 @@ import {
   startQueued,
   textWidth,
 } from '../hooks/lib/timeline'
-import { band, drain, fakeGit, notGit, pane, stepsByTurn, SURFACES } from './helpers'
+import { A_TS_DIFF, band, diffPane, drain, fakeGit, notGit, pane, stepsByTurn, SURFACES } from './helpers'
 
 const USAGE = { input_tokens: 1200, output_tokens: 300, cache_read_input_tokens: 40_000, cache_creation_input_tokens: 900, model: 'any-model' }
 
@@ -240,15 +240,41 @@ describe('git snapshots', () => {
     const after = await snapshot(run)
     expect(before).toEqual({ root: '/repo', tree: 'aaa', untracked: { 'notes.txt': 'b1' } })
     const edits = await diffSnapshots(run, before!, after!)
+    // An untracked file keeps the blobs its diff runs between; a new one starts from the empty blob.
     expect(edits).toEqual({
       files: [
         { path: 'hooks/a.ts', added: 3, removed: 1 },
-        { path: 'new.txt', added: 5, removed: 0 },
-        { path: 'notes.txt', added: 2, removed: 0 },
+        { path: 'new.txt', added: 5, removed: 0, blobs: ['e69', 'b3'] },
+        { path: 'notes.txt', added: 2, removed: 0, blobs: ['b1', 'b2'] },
       ],
       added: 10,
       removed: 1,
+      range: { root: '/repo', from: 'aaa', to: 'bbb' },
     })
+  })
+
+  test("a file's diff runs between the snapshots, or between its blobs when untracked", async () => {
+    const calls: string[][] = []
+    const run = gitRun(fakeGit(calls))
+    const edits = (await diffSnapshots(run, (await snapshot(run))!, (await snapshot(run))!))!
+    const [tracked, added, untracked] = edits.files
+    expect(await fileDiff(run, edits, tracked!)).toBe(A_TS_DIFF.trimEnd())
+    expect(calls.at(-1)).toEqual(['git', 'diff', '--no-color', '--no-ext-diff', '--no-renames', 'aaa', 'bbb', '--', 'hooks/a.ts'])
+    expect(await fileDiff(run, edits, untracked!)).toBe('@@ -1 +1,3 @@\n line\n+more\n+lines')
+    // git couldn't produce it (the stub knows no such diff): null, never a throw.
+    expect(await fileDiff(run, edits, added!)).toBeNull()
+    // A session total has no snapshots, a large file no lines: neither has a diff.
+    expect(await fileDiff(run, { ...edits, range: undefined }, tracked!)).toBeNull()
+    expect(await fileDiff(run, edits, { path: 'big.bin', added: null, removed: null, large: true })).toBeNull()
+  })
+
+  test('a long diff is cut to MAX_DIFF_LINES', async () => {
+    const long = Array.from({ length: MAX_DIFF_LINES + 5 }, (_, i) => '+' + i).join('\n')
+    const run: GitRun = async () => ({ exitCode: 0, stdout: long + '\n' })
+    const text = await fileDiff(run, { files: [], added: 0, removed: 0, range: { root: '/r', from: 'a', to: 'b' } }, { path: 'x', added: 1, removed: 0 })
+    const lines = text!.split('\n')
+    expect(lines).toHaveLength(MAX_DIFF_LINES + 1)
+    expect(lines.at(-1)).toBe('… 5 more lines')
   })
 
   test("git for Windows' \\r\\n line ends don't spoil the blob ids", async () => {
@@ -277,7 +303,7 @@ describe('git snapshots', () => {
     const edits = await diffSnapshots(run, before!, after!)
     expect(edits?.files).toEqual([
       { path: 'hooks/a.ts', added: 3, removed: 1 },
-      { path: 'new.txt', added: 5, removed: 0 },
+      { path: 'new.txt', added: 5, removed: 0, blobs: ['e69', 'b3'] },
       { path: 'notes.txt', added: null, removed: null, large: true },
     ])
     expect(edits).toMatchObject({ added: 8, removed: 1 })
@@ -677,18 +703,20 @@ describe('edited files band', () => {
       expect(await ui.find({ type: 'Text', text: 'Edited 3 files' })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: '+10' })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: '−1' })).toBeDefined()
-      expect(await ui.find({ type: 'Text', text: '  hooks/a.ts' })).toBeUndefined()
+      expect(await ui.find({ key: 'edit-open-hooks/a.ts' })).toBeUndefined()
       await ui.press({ key: 'edits-toggle' })
-      expect(await ui.find({ type: 'Text', text: '  hooks/a.ts' })).toBeDefined()
-      expect(await ui.find({ type: 'Text', text: '  new.txt' })).toBeDefined()
+      // Each file is a press that opens its diff.
+      expect(await ui.find({ type: 'Button', label: '  hooks/a.ts' })).toBeDefined()
+      expect(await ui.find({ type: 'Button', label: '  new.txt' })).toBeDefined()
       await ui.press({ key: 'edits-toggle' })
-      expect(await ui.find({ type: 'Text', text: '  hooks/a.ts' })).toBeUndefined()
+      expect(await ui.find({ key: 'edit-open-hooks/a.ts' })).toBeUndefined()
       await ui.unmount()
     }
 
-    // The timeline's line and overview carry the same totals.
+    // The timeline's line and overview carry the same totals. The turn changed
+    // source files and ran no check: its row says so.
     const timeline = await $.ui.mount(pane('terminal'))
-    expect((await turnLines(timeline))[0]).toBe('#1 edit the hooks | 1 call 2.0s +10 −1')
+    expect((await turnLines(timeline))[0]).toBe('#1 edit the hooks | 1 call 2.0s +10 −1 ⚠ unchecked')
     expect(await timeline.find({ type: 'Text', text: '3 files +10 −1' })).toBeDefined()
     await timeline.unmount()
 
@@ -696,6 +724,64 @@ describe('edited files band', () => {
     await ui.press({ key: 'edits-dismiss' })
     expect(await ui.find({ type: 'Text', text: /^Edited/ })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: 'other band' })).toBeDefined()
+  })
+
+  test("a file pressed opens the diff pane on its diff, from the band or a turn's row", async ($, on) => {
+    const opened: unknown[] = []
+    const closed: unknown[] = []
+    on('session.surfaces', () => ({ value: ['terminal'] }))
+    on('process.run', fakeGit())
+    on('turn.start', ($, e) => ({ turnId: e.turnId }))
+    on('turn.step', stepsByTurn(PLANS))
+    on('turn.complete', ($, e) => ({ text: e.answer }))
+    on('ui.open', ($, e) => {
+      opened.push(e)
+      return { value: { isPlaced: true } }
+    })
+    on('ui.close', ($, e) => {
+      closed.push(e)
+      return { value: undefined }
+    })
+    on('ui.render', () => ({ type: 'Text' as const, props: {}, children: ['other band'] }))
+
+    await runTurn($, 't3', 'edit the hooks', 2)
+    for (const surface of SURFACES) {
+      const before = opened.length
+      const ui = await $.ui.mount(band(surface))
+      await ui.press({ key: 'edits-toggle' })
+      await ui.press({ key: 'edit-open-hooks/a.ts' })
+      await ui.press({ key: 'edits-toggle' })
+      await ui.unmount()
+      expect(opened.slice(before)).toEqual([{ id: 'cockpit-diff', title: 'Cockpit diff' }])
+
+      // git's header gives way to the path; then the hunks, a tab drawn as spaces.
+      const diff = await $.ui.mount(diffPane(surface))
+      const body = texts(await diff.find({ key: 'diff-body' }))
+      expect(body).toEqual(['@@ -1,3 +1,5 @@', ' export const a = 1', '-export const b = 2', '+export const b = 3', '+    const c = 4', '+'])
+      expect(await diff.find({ type: 'Text', text: 'hooks/a.ts' })).toBeDefined()
+      expect(await diff.find({ type: 'Text', text: '+export const b = 3', color: 'success' })).toBeDefined()
+      expect(await diff.find({ type: 'Text', text: '-export const b = 2', color: 'error' })).toBeDefined()
+      await diff.press({ key: 'diff-close' })
+      await diff.unmount()
+    }
+    expect(closed).toMatchObject([{ id: 'cockpit-diff' }, { id: 'cockpit-diff' }])
+
+    // From the timeline: the turn pressed open, then its untracked file.
+    const timeline = await $.ui.mount(pane('terminal'))
+    await timeline.press({ key: 'turn-t3' })
+    await timeline.press({ key: 'row-t3-open-2' })
+    await timeline.unmount()
+    const diff = await $.ui.mount(diffPane('terminal'))
+    expect(await diff.find({ type: 'Text', text: 'notes.txt' })).toBeDefined()
+    expect(texts(await diff.find({ key: 'diff-body' }))).toEqual(['@@ -1 +1,3 @@', ' line', '+more', '+lines'])
+    await diff.unmount()
+
+    // A diff git can no longer produce says so.
+    const again = await $.ui.mount(pane('terminal'))
+    await again.press({ key: 'row-t3-open-1' })
+    await again.unmount()
+    const gone = await $.ui.mount(diffPane('terminal'))
+    expect(await gone.find({ type: 'Text', text: 'git can no longer show this change.' })).toBeDefined()
   })
 
   test('stays out of the way during a turn, a survey, or a subagent view', async ($, on) => {

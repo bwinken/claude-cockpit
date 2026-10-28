@@ -55,6 +55,12 @@ export type CockpitEditedFile = {
   added: number | null
   removed: number | null
   large?: true
+  /**
+   * For a file untracked on either side: the two git objects its diff runs
+   * between (a blob id, or `<tree>:<path>`). Absent for a tracked file, whose
+   * diff runs between the snapshots' trees.
+   */
+  blobs?: readonly [from: string, to: string]
 }
 
 /** What a turn changed in the working tree, by git. */
@@ -62,6 +68,14 @@ export type CockpitEdits = {
   files: readonly CockpitEditedFile[]
   added: number
   removed: number
+  /** The repository and the two snapshots' trees, for each file's diff; absent on a session total. */
+  range?: { root: string; from: string; to: string }
+}
+
+/** The diff the diff pane shows: one file a turn edited. `text` is null when git couldn't produce it. */
+export type CockpitDiffView = {
+  path: string
+  text: string | null
 }
 
 /**
@@ -90,6 +104,11 @@ export type CockpitLiveTurn = {
   calls?: readonly CockpitCall[]
   /** How many of its tool calls failed, counted past MAX_CALLS too. */
   failed?: number
+  /**
+   * `edited` once a file tool changed a source file, `checked` once a check
+   * (tests, lint, types, build) ran after that; absent while neither happened.
+   */
+  checkState?: 'edited' | 'checked'
 }
 
 /** One tool call of a turn, for its expanded row: what ran on what, and how it failed. */
@@ -172,6 +191,8 @@ export type CockpitTurnRow = {
   calls?: readonly CockpitCall[]
   /** How many of its tool calls failed. */
   failed?: number
+  /** True when the turn changed source files and ran no check after its last edit. */
+  unchecked?: true
 }
 
 /** The turns before one compaction, folded under a header. */
@@ -251,6 +272,9 @@ declare module 'claude-code' {
       lastEdits: CockpitEdits | null
       editsExpanded: boolean
       editsDismissed: boolean
+      diffView: CockpitDiffView | null
+      /** True while source files have changed since the last check of any kind ran. */
+      editedSinceCheck: boolean
     }
   }
 }

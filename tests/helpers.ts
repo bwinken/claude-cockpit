@@ -97,6 +97,11 @@ export function pane(surface: (typeof SURFACES)[number], bodyColumns = 100) {
   } as const
 }
 
+/** The diff pane as Claude Code hands it to `ui.render`. */
+export function diffPane(surface: (typeof SURFACES)[number]) {
+  return { ...pane(surface), requestId: 'cockpit-diff', props: { ...pane(surface).props, title: 'Cockpit diff' } } as const
+}
+
 /** The band above the prompt as Claude Code hands it to `ui.render`. */
 export function band(
   surface: (typeof SURFACES)[number],
@@ -135,7 +140,22 @@ export function notGit() {
  * the first snapshot sees `notes.txt` untracked; by the second, the turn
  * changed `hooks/a.ts` (+3 −1), grew `notes.txt` (+2) and added `new.txt` (+5).
  * `calls` collects every argv, to show nothing but read-only git ran.
+ * `hooks/a.ts`'s diff is A_TS_DIFF; `notes.txt`'s, between its blobs, a hunk.
  */
+export const A_TS_DIFF = [
+  'diff --git a/hooks/a.ts b/hooks/a.ts',
+  'index 1111111..2222222 100644',
+  '--- a/hooks/a.ts',
+  '+++ b/hooks/a.ts',
+  '@@ -1,3 +1,5 @@',
+  ' export const a = 1',
+  '-export const b = 2',
+  '+export const b = 3',
+  '+\tconst c = 4',
+  '+',
+  '',
+].join('\n')
+
 export function fakeGit(calls: string[][] = []) {
   let snapshots = 0
   return ($: unknown, e: RunArgs): RunValue => {
@@ -158,6 +178,8 @@ export function fakeGit(calls: string[][] = []) {
     if (args === 'diff --numstat -z --no-renames aaa bbb') return ran(0, '3\t1\thooks/a.ts\0')
     if (args === 'diff --numstat b1 b2') return ran(0, '2\t0\tb1 => b2\n')
     if (args === 'diff --numstat e69 b3') return ran(0, '5\t0\te69 => b3\n')
+    if (args === 'diff --no-color --no-ext-diff --no-renames aaa bbb -- hooks/a.ts') return ran(0, A_TS_DIFF)
+    if (args === 'diff --no-color --no-ext-diff b1 b2') return ran(0, '@@ -1 +1,3 @@\n line\n+more\n+lines\n')
     return ran(1, '')
   }
 }
