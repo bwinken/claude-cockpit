@@ -122,3 +122,16 @@ module that breaks these:
   pane's grid reads `full`, and only while it's open, since `full` sends a
   token-count request per tool and memory file. The bar reads the live
   figure and `summary`'s window and buffer, which `summary` gets right.
+
+## Diff pane and unchecked edits (0.3.0, checked by the test kit only)
+
+- The diff pane runs `git diff` from a Button's `onPress` (`$.process.run`,
+  then `$.state` and `$.ui.open`). The test kit allows all three from a
+  press; a real session hasn't been tried yet. A render hook can't run git:
+  drawing is pure, so the diff is fetched in the press and kept in state.
+- The mod elements are `Box`, `Text`, `Button`, `Input`, `Select`, `Link`,
+  `Code` and `Markdown`. `Code` takes `source` alone (no language), so the
+  diff is drawn as one coloured `Text` per line.
+- The diff of a tracked file runs between the two `git stash create`
+  commits; nothing references them, so `git gc` prunes them after
+  `gc.pruneExpire` (two weeks by default) and the pane then says so.

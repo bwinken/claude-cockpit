@@ -1,10 +1,11 @@
 // The band above the prompt: what the last turn edited, by git.
-// `Edited 9 files +682 −1`, expandable to one row per file. No `$` here: the
-// hook in register.tsx reads the state and passes the surface's elements in.
+// `Edited 9 files +682 −1`, expandable to one row per file; a file pressed
+// opens its diff. No `$` here: the hook in register.tsx reads the state and
+// passes the surface's elements in.
 
 import type { Elements, RenderElement, RenderSurface } from 'claude-code'
 
-import type { CockpitEdits } from '../../types'
+import type { CockpitEditedFile, CockpitEdits } from '../../types'
 import { count } from '../lib/rounds'
 import { describeLines, shortPath } from '../lib/timeline'
 
@@ -17,6 +18,13 @@ export type EditsModel = {
   columns: number
   onToggle: () => unknown
   onDismiss: () => unknown
+  /** Opens a file's diff; absent, the files are plain text. */
+  onOpenFile?: (file: CockpitEditedFile) => unknown
+}
+
+/** Whether a file's diff can be shown: git snapshots on both sides, and not a large file. */
+export function hasDiff(edits: CockpitEdits, file: CockpitEditedFile): boolean {
+  return edits.range !== undefined && file.large !== true
 }
 
 /** cockpit's rows under whatever the mods beneath drew in the band (`theirs`). */
@@ -40,9 +48,15 @@ export function editsBandTree(ui: Elements[RenderSurface], model: EditsModel, th
     const listed = edits.files.slice(0, MAX_LISTED_FILES)
     for (const file of listed) {
       const lines = describeLines(file)
+      const path = '  ' + shortPath(file.path, columns - lines.length - 4)
+      const onOpen = model.onOpenFile
       rows.push(
         <Box key={'edit-' + file.path} flexDirection="row" justifyContent="space-between">
-          <Text wrap="truncate-start">{'  ' + shortPath(file.path, columns - lines.length - 4)}</Text>
+          {onOpen !== undefined && hasDiff(edits, file) ? (
+            <Button key={'edit-open-' + file.path} plain label={path} onPress={() => onOpen(file)} />
+          ) : (
+            <Text wrap="truncate-start">{path}</Text>
+          )}
           {file.added === null && file.removed === null ? (
             <Text dimColor>{lines}</Text>
           ) : (

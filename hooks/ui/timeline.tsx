@@ -11,6 +11,8 @@ import type {
   CockpitCall,
   CockpitCheck,
   CockpitContextMap,
+  CockpitEditedFile,
+  CockpitEdits,
   CockpitLiveTurn,
   CockpitPlanItem,
   CockpitTimeline,
@@ -31,6 +33,7 @@ import {
   shortPath,
   textWidth,
 } from '../lib/timeline'
+import { hasDiff } from './edits'
 
 export type TimelineModel = {
   timeline: CockpitTimeline
@@ -54,6 +57,8 @@ export type TimelineModel = {
   isContextExpanded?: boolean
   /** The last run of each kind of check; none, and the line is left out. */
   checks?: readonly CockpitCheck[]
+  /** True while source files have changed since the last check: the checks line warns. */
+  editedSinceCheck?: boolean
   /** The model's plan; empty, and the line is left out. */
   plan?: readonly CockpitPlanItem[]
   isPlanExpanded?: boolean
@@ -66,6 +71,8 @@ export type TimelineModel = {
   onToggleTurn?: (turnId: string) => unknown
   onTogglePlan?: () => unknown
   onToggleContext?: () => unknown
+  /** Opens the diff of a file a turn edited; absent, the files are plain text. */
+  onOpenFile?: (edits: CockpitEdits, file: CockpitEditedFile) => unknown
 }
 
 /** The width of a row's calls column (`12 calls`), and of its time column (`1m 05s`). */
@@ -78,6 +85,7 @@ const MAX_LISTED_FILES = 8
 export function rowExtra(row: CockpitTurnRow): string {
   const parts: string[] = []
   if (row.edits !== null && row.edits.files.length > 0) parts.push(describeLines(row.edits))
+  if (row.unchecked) parts.push('⚠ unchecked')
   if (row.isAborted) parts.push('interrupted')
   return parts.join('  ')
 }
@@ -141,14 +149,21 @@ export function timelineTree(ui: Elements[RenderSurface], model: TimelineModel):
   ]
   overview.push(field('tools', 'tools', totals.tools.length > 0 ? formatTally(totals.tools, maxTools) : 'no calls yet'))
 
-  // tests ✓ 2m ago · lint ✗ just now: the last run of each kind, by any loop.
+  // tests ✓ 2m ago · lint ✗ just now: the last run of each kind, by any loop;
+  // then a warning while source files have changed since the last of them.
   const checks = model.checks ?? []
-  if (checks.length > 0) {
+  const isEditedSince = model.editedSinceCheck === true
+  if (checks.length > 0 || isEditedSince) {
     overview.push(
       field(
         'checks',
         'checks',
         <Box flexDirection="row" flexWrap="wrap">
+          {checks.length === 0 ? (
+            <Text key="checks-none" dimColor>
+              none yet
+            </Text>
+          ) : null}
           {checks.flatMap((check, i) => [
             i > 0 ? <Text key={'sep-' + check.kind} dimColor>{' · '}</Text> : null,
             <Text key={'check-' + check.kind} color={check.isPassing ? 'success' : 'error'}>
@@ -160,6 +175,11 @@ export function timelineTree(ui: Elements[RenderSurface], model: TimelineModel):
               </Text>
             ),
           ])}
+          {isEditedSince ? (
+            <Text key="checks-edited" color="warning">
+              {' · ⚠ code edited since'}
+            </Text>
+          ) : null}
         </Box>,
       ),
     )
@@ -300,13 +320,21 @@ export function timelineTree(ui: Elements[RenderSurface], model: TimelineModel):
         </Text>,
       )
     }
-    const files = row.edits?.files ?? []
+    const edits = row.edits
+    const files = edits?.files ?? []
     files.slice(0, MAX_LISTED_FILES).forEach((file, i) => {
       const lines = describeLines(file)
+      const path = shortPath(file.path, subjectRoom - lines.length - 1) + ' '
+      const onOpen = model.onOpenFile
       rows.push(
         <Box key={`${key}-file-${i}`} flexDirection="row">
           <Text dimColor>{indent + (i === 0 ? 'edited' : '').padEnd(toolWidth) + '  '}</Text>
-          <Text wrap="truncate-start">{shortPath(file.path, subjectRoom - lines.length - 1) + ' '}</Text>
+          {edits !== null && onOpen !== undefined && hasDiff(edits, file) ? (
+            // Pressed, the file's diff opens in a pane of its own.
+            <Button key={`${key}-open-${i}`} plain label={path} onPress={() => onOpen(edits, file)} />
+          ) : (
+            <Text wrap="truncate-start">{path}</Text>
+          )}
           <Text dimColor>{lines}</Text>
         </Box>,
       )

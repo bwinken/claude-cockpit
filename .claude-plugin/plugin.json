@@ -1,7 +1,7 @@
 {
   "name": "cockpit",
-  "version": "0.2.2",
-  "description": "Makes a Claude Code session's work visible: the running round of tool calls, a per-turn summary, a session timeline, the files each turn edited, and a guard for destructive tool calls.",
+  "version": "0.3.0",
+  "description": "Makes a Claude Code session's work visible: the running round of tool calls, a per-turn summary, a session timeline, the files each turn edited and their diffs, edits no check ran after, and a guard for destructive tool calls.",
   "author": {
     "name": "bwinken"
   },
@@ -48,13 +48,19 @@
     "editedFiles": {
       "type": "boolean",
       "title": "Edited files band",
-      "description": "After each turn in a git repository, show above the prompt which files the turn changed and by how many lines. Outside a git repository nothing is shown.",
+      "description": "After each turn in a git repository, show above the prompt which files the turn changed and by how many lines; press a file to see its diff. Outside a git repository nothing is shown.",
+      "default": true
+    },
+    "uncheckedEdits": {
+      "type": "boolean",
+      "title": "Flag edits no check ran after",
+      "description": "Mark a turn that changed source files without running tests, lint, a type-check or a build after its last edit: on the turn's summary line, its timeline row, and the timeline's checks line.",
       "default": true
     },
     "gate": {
       "type": "boolean",
       "title": "Tool guard",
-      "description": "Refuse clearly destructive tool calls (rm -rf, git reset --hard, force push, file writes outside the project), plus any deny rules in your rules file. Every decision is logged and kept in an audit trail.",
+      "description": "Refuse clearly destructive tool calls (rm -rf, git reset --hard, force push, git clean -f, piping a download into a shell, chmod 777, reading .env and private keys, file writes outside the project), plus any deny rules in your rules file. Every decision is logged and kept in an audit trail.",
       "default": true
     },
     "gateAutoModePrompt": {
@@ -73,7 +79,7 @@
       "type": "string",
       "multiple": true,
       "title": "Built-in guard rules to turn off",
-      "description": "Any of rm-rf, git-reset-hard, git-push-force, write-outside-project.",
+      "description": "Any of rm-rf, git-reset-hard, git-push-force, git-discard, pipe-to-shell, chmod-777, read-secrets, write-outside-project.",
       "default": []
     }
   }

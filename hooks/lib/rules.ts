@@ -6,9 +6,26 @@
 // any pattern on a command line, they're a safety net for honest mistakes,
 // not a sandbox: a determined command can always be spelled another way.
 
-export type RuleId = 'rm-rf' | 'git-reset-hard' | 'git-push-force' | 'write-outside-project'
+export type RuleId =
+  | 'rm-rf'
+  | 'git-reset-hard'
+  | 'git-push-force'
+  | 'git-discard'
+  | 'pipe-to-shell'
+  | 'chmod-777'
+  | 'read-secrets'
+  | 'write-outside-project'
 
-export const BUILTIN_RULES: readonly RuleId[] = ['rm-rf', 'git-reset-hard', 'git-push-force', 'write-outside-project']
+export const BUILTIN_RULES: readonly RuleId[] = [
+  'rm-rf',
+  'git-reset-hard',
+  'git-push-force',
+  'git-discard',
+  'pipe-to-shell',
+  'chmod-777',
+  'read-secrets',
+  'write-outside-project',
+]
 
 /** A rule the person adds in a rules file: `pattern` is a regular expression over the call's subject. */
 export type CustomRule = {
@@ -128,6 +145,107 @@ function isForcePush(words: readonly string[]): boolean {
   })
 }
 
+/**
+ * `git clean` that deletes (`-f`, not a dry run `-n`), or a checkout or
+ * restore of the whole tree (`.`, `:/`, `*`), which throws away every
+ * uncommitted change. Restoring a named file is left alone.
+ */
+function isGitDiscard(words: readonly string[]): boolean {
+  const args = gitArgs(words)
+  if (args === null || args.length === 0) return false
+  const [sub, ...rest] = args
+  if (sub === 'clean') {
+    const short = rest.filter(arg => /^-[a-zA-Z]+$/.test(arg))
+    const isDryRun = rest.includes('--dry-run') || short.some(arg => arg.includes('n'))
+    return !isDryRun && (rest.includes('--force') || short.some(arg => arg.includes('f')))
+  }
+  const isWholeTree = (arg: string) => arg === '.' || arg === ':/' || arg === '*' || arg === './' || arg === ':/:'
+  if (sub === 'checkout') {
+    const dash = rest.indexOf('--')
+    const paths = dash === -1 ? rest.filter(arg => !arg.startsWith('-')) : rest.slice(dash + 1)
+    return paths.some(isWholeTree)
+  }
+  if (sub === 'restore') {
+    // --staged alone only unstages: the working tree keeps its changes.
+    if (rest.some(arg => arg === '--staged' || arg === '-S') && !rest.some(arg => arg === '--worktree' || arg === '-W')) return false
+    return rest.filter(arg => !arg.startsWith('-')).some(isWholeTree)
+  }
+  return false
+}
+
+/** Programs that run whatever script they read on stdin. */
+const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'python', 'python3', 'perl', 'ruby', 'node'])
+const DOWNLOADERS = new Set(['curl', 'wget'])
+
+/**
+ * A download run as a script: `curl … | sh`, `wget -O- … | sudo bash`,
+ * `bash <(curl …)`, `sh -c "$(curl …)"`, or PowerShell's `irm … | iex`.
+ */
+function isPipeToShell(tool: string, command: string): boolean {
+  if (/\b(?:iwr|irm|Invoke-WebRequest|Invoke-RestMethod|curl|wget)\b[^\n;]*\|\s*(?:iex|Invoke-Expression)\b/i.test(command)) return true
+  if (/\b(?:iex|Invoke-Expression)\b[^\n;]*\b(?:iwr|irm|Invoke-WebRequest|Invoke-RestMethod|DownloadString)\b/i.test(command)) return true
+  if (tool === 'PowerShell') return false
+  if (/\b(?:ba|z|da|k)?sh\b[^\n;|&]*<\(\s*(?:curl|wget)\b/.test(command)) return true
+  if (/\b(?:ba|z|da|k)?sh\s+-c\s+["']?\$\(\s*(?:curl|wget)\b/.test(command)) return true
+  // Pipelines, quoted text blanked as `segments` does: a downloader, then a shell later in the same pipeline.
+  const unquoted = command.replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, 'Q')
+  for (const pipeline of unquoted.split(/\|\||&&|[;&\n]/)) {
+    const stages = pipeline.split('|').map(stage => program(stage.trim().split(/\s+/).filter(Boolean)))
+    const fetched = stages.findIndex(([name]) => name !== undefined && DOWNLOADERS.has(name))
+    if (fetched !== -1 && stages.slice(fetched + 1).some(([name]) => name !== undefined && SHELLS.has(name))) return true
+  }
+  return false
+}
+
+/** `chmod 777`, `chmod -R 0777`, `chmod a+rwx`: anyone may write, and run, what it touches. */
+function isWorldWritable(words: readonly string[]): boolean {
+  const [name, ...args] = program(words)
+  if (name !== 'chmod') return false
+  return args.some(arg => /^0?777$/.test(arg) || /^(?:a|ugo)\+rwx$/.test(arg))
+}
+
+/**
+ * A file that holds secrets: `.env` and its variants (not the `.example`,
+ * `.sample` or `.template` checked in to show the keys), `.envrc`, SSH private
+ * keys, AWS credentials, `.netrc`, `.pgpass`.
+ */
+export function isSecretFile(path: string): boolean {
+  const normalized = path.replace(/\\/g, '/').replace(/^["']|["']$/g, '')
+  const name = normalized.slice(normalized.lastIndexOf('/') + 1)
+  if (/^\.env(?:\..+)?$/.test(name)) return !/\.(?:example|sample|template|dist|defaults|schema)$/i.test(name)
+  if (name === '.envrc' || name === '.netrc' || name === '.pgpass') return true
+  if (/^id_(?:rsa|dsa|ecdsa|ed25519)(?:_sk)?$/.test(name)) return true
+  return /(?:^|\/)\.aws\/credentials$/.test(normalized)
+}
+
+/** Programs that print a file's contents, wholly or in part. */
+const READERS = new Set([
+  'cat', 'less', 'more', 'head', 'tail', 'bat', 'batcat', 'tac', 'nl', 'strings', 'xxd', 'od', 'hexdump', 'base64',
+  'grep', 'egrep', 'fgrep', 'rg', 'ag', 'awk', 'sed', 'cut', 'sort', 'uniq', 'jq', 'yq',
+  'get-content', 'gc', 'type', 'select-string', 'sls',
+])
+
+/** The secret file a shell command prints, if any: `cat .env`, `grep KEY .env.local`, `Get-Content .env`. */
+function secretRead(words: readonly string[]): string | undefined {
+  const [name, ...args] = program(words)
+  if (name === undefined || !READERS.has(name.toLowerCase())) return undefined
+  // A redirect's target is written, not read: `cat .env.example > .env` reads the example.
+  const read = args.filter((arg, i) => !/^\d*>/.test(arg) && !/^\d*>>?$/.test(args[i - 1] ?? ''))
+  return read.map(arg => arg.replace(/^</, '')).find(arg => !arg.startsWith('-') && isSecretFile(arg))
+}
+
+/** File tools that read a file's contents, and the argument that names it. */
+const READ_TOOLS: Readonly<Record<string, string>> = { Read: 'file_path', Grep: 'path', NotebookRead: 'notebook_path' }
+
+export function secretVerdict(path: string): Verdict {
+  return {
+    rule: 'read-secrets',
+    reason:
+      `${path} holds secrets (keys, tokens, passwords), and reading it puts them in the conversation. ` +
+      'Read the matching .env.example or the code that uses the values instead, or ask the user for the one value you need.',
+  }
+}
+
 function isPowerShellRecursiveForceRemove(command: string): boolean {
   return /\b(Remove-Item|rm|del|rd|rmdir)\b[^\n;|]*-Recurse\b[^\n;|]*-Force\b|\b(Remove-Item|rm|del|rd|rmdir)\b[^\n;|]*-Force\b[^\n;|]*-Recurse\b/i.test(command)
 }
@@ -162,6 +280,34 @@ export function checkCommand(tool: string, command: string, disabled: ReadonlySe
         'use --force-with-lease if a rewrite is really needed, or ask the user to push.',
     }
   }
+  if (!disabled.has('git-discard') && parts.some(isGitDiscard)) {
+    return {
+      rule: 'git-discard',
+      reason:
+        'this throws away uncommitted work for good: git clean -f deletes untracked files, and a checkout or restore of the whole tree ' +
+        'discards every change. Use `git stash -u` to set changes aside, restore the specific files you mean by path, or ask the user.',
+    }
+  }
+  if (!disabled.has('pipe-to-shell') && isPipeToShell(tool, command)) {
+    return {
+      rule: 'pipe-to-shell',
+      reason:
+        'this runs a script straight from the network, unread. Download it to a file first, read it, then ask the user ' +
+        'before running it; or install the tool with a package manager.',
+    }
+  }
+  if (!disabled.has('chmod-777') && parts.some(isWorldWritable)) {
+    return {
+      rule: 'chmod-777',
+      reason:
+        'chmod 777 lets every user on the machine write and run these files. Grant only what is needed, ' +
+        'such as `chmod u+x` for a script or `chmod 644` for a file.',
+    }
+  }
+  if (!disabled.has('read-secrets')) {
+    const secret = parts.map(secretRead).find(path => path !== undefined)
+    if (secret !== undefined) return secretVerdict(secret)
+  }
   return null
 }
 
@@ -185,6 +331,9 @@ export function checkCall(tool: string, input: Record<string, unknown>, rules: G
     const verdict = checkCommand(tool, input.command, rules.disabled)
     if (verdict) return verdict
   }
+  const field = READ_TOOLS[tool]
+  const read = field === undefined ? undefined : input[field]
+  if (!rules.disabled.has('read-secrets') && typeof read === 'string' && isSecretFile(read)) return secretVerdict(read)
   const subject = subjectOf(tool, input)
   const custom = rules.deny.find(rule => matches(rule, tool, subject))
   if (custom) {
