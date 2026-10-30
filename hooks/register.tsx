@@ -768,11 +768,15 @@ export const register: Register = (on, options) => {
         Object.fromEntries(Object.entries(all).filter(([key, b]) => key !== blockKey && checkedAt - (b.at ?? 0) < AUTO_BLOCK_MS)),
       )
 
+      // A subagent's blocked call stays blocked without a question: the subagent finds another way.
+      if (e.agentId !== undefined) {
+        await recordDecision($, { tool: e.tool, decision: 'kept-auto-block', rule: 'auto-mode', subject, reason: block.reason })
+        return observed($, e, result, isRecorded)
+      }
+
       const shown = JSON.stringify(args, null, 2)
       const question =
-        `Auto mode blocked a ${e.tool} call` +
-        (e.agentId === undefined ? '' : ` from a subagent (${e.agentId})`) +
-        `.\nReason: ${block.reason}\n\n${e.tool} arguments:\n` +
+        `Auto mode blocked a ${e.tool} call.\nReason: ${block.reason}\n\n${e.tool} arguments:\n` +
         (shown.length > ASK_ARGS_SHOWN ? shown.slice(0, ASK_ARGS_SHOWN) + `\n… (${shown.length - ASK_ARGS_SHOWN} more characters)` : shown) +
         '\n\nRun it once anyway?'
       let answer = KEEP_BLOCKED
