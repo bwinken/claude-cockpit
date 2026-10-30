@@ -1,6 +1,6 @@
 {
   "name": "cockpit",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Makes a Claude Code session's work visible: the running round of tool calls, a per-turn summary, a session timeline, the files each turn edited and their diffs, edits no check ran after, and a guard for destructive tool calls.",
   "author": {
     "name": "bwinken"
@@ -66,7 +66,7 @@
     "gateAutoModePrompt": {
       "type": "boolean",
       "title": "Ask when auto mode blocks a call",
-      "description": "When the auto mode classifier blocks a tool call, ask whether to run it once anyway. Only in auto mode; Claude Code's own permission prompts are never asked twice.",
+      "description": "When the auto mode classifier blocks a tool call, ask whether to run it once anyway. Only in auto mode, and never for a subagent's call; Claude Code's own permission prompts are never asked twice.",
       "default": true
     },
     "gateRulesFile": {

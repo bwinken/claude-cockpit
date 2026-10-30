@@ -58,7 +58,7 @@ In a git repository, a band above the prompt shows what the last turn changed, i
 
 ### Tool guard
 
-The guard refuses calls that are clearly destructive and tells Claude what to do instead. It never asks about ordinary calls. It asks only when **auto mode blocks a call**, showing the full arguments so you can run it once.
+The guard refuses calls that are clearly destructive and tells Claude what to do instead. It never asks about ordinary calls. It asks only when **auto mode blocks a call**, showing the full arguments so you can run it once. A call a subagent made stays blocked without a question.
 
 ![Auto mode blocked a call; cockpit asks whether to run it once](docs/images/auto.png)
 
